@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#0b3d2e" />
+<title>電子野帳</title>
+<style>
+  :root { --fg:#111; --bg:#fff; --accent:#0b3d2e; --warn:#b00020; --line:#bbb; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+    font-family: system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; font-size:18px; }
+  header { background:var(--accent); color:#fff; padding:10px 12px; display:flex; align-items:center; gap:10px; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:18px; margin:0; flex:1; }
+  header button { background:#ffffff22; color:#fff; border:1px solid #ffffff55; border-radius:8px; padding:8px 10px; font-size:16px; }
+  #status { font-size:14px; opacity:.9; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; padding:10px 12px; border-bottom:2px solid var(--line); position:sticky; top:46px; background:var(--bg); z-index:4; }
+  .bar button { flex:1 1 auto; min-height:56px; font-size:18px; font-weight:600; border-radius:12px; border:2px solid var(--accent); background:#fff; color:var(--accent); }
+  #micBtn { flex:2 1 160px; }
+  #micBtn.listening { background:var(--accent); color:#fff; animation:pulse 1.2s infinite; }
+  @keyframes pulse { 0%{opacity:1} 50%{opacity:.7} 100%{opacity:1} }
+  .toggle { display:flex; align-items:center; gap:6px; flex:1 1 auto; font-size:16px; border:2px solid var(--line); border-radius:12px; padding:0 10px; min-height:56px; justify-content:center; }
+  .toggle input { width:24px; height:24px; }
+  #live { padding:10px 12px; min-height:48px; font-size:20px; color:#333; background:#f4f7f5; border-bottom:1px solid var(--line); }
+  #live .interim { color:#888; }
+  #pending { padding:10px 12px; display:none; gap:8px; border-bottom:1px solid var(--line); }
+  #pending textarea { width:100%; font-size:18px; padding:8px; border:2px solid var(--line); border-radius:8px; min-height:60px; }
+  #warnings { padding:6px 12px; color:var(--warn); font-size:15px; }
+  .tableWrap { overflow:auto; padding:0 0 120px; }
+  table { border-collapse:collapse; width:max-content; min-width:100%; }
+  th,td { border:1px solid var(--line); padding:0; white-space:nowrap; }
+  th { background:#eef2f0; font-size:15px; padding:8px 6px; position:sticky; top:0; }
+  td input { border:none; width:100%; min-width:64px; padding:12px 8px; font-size:18px; background:transparent; }
+  td.num input { text-align:right; }
+  td.bad input { background:#ffe3e3; color:var(--warn); font-weight:700; }
+  td.delcol { text-align:center; }
+  .delBtn { background:#fff; border:1px solid var(--warn); color:var(--warn); border-radius:8px; padding:8px 10px; font-size:16px; }
+  .modal { position:fixed; inset:0; background:#0008; display:none; align-items:center; justify-content:center; z-index:20; }
+  .modal.show { display:flex; }
+  .card { background:#fff; border-radius:14px; padding:18px; width:92%; max-width:520px; }
+  .card h2 { margin-top:0; }
+  .card label { display:block; margin:12px 0 4px; font-weight:600; }
+  .card input { width:100%; font-size:16px; padding:10px; border:2px solid var(--line); border-radius:8px; }
+  .card .row { display:flex; gap:8px; margin-top:16px; }
+  .card .row button { flex:1; min-height:48px; font-size:16px; border-radius:10px; border:2px solid var(--accent); }
+  .primary { background:var(--accent); color:#fff; }
+  .ghost { background:#fff; color:var(--accent); }
+  .hint { font-size:13px; color:#666; margin-top:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>電子野帳</h1>
+  <span id="status">—</span>
+  <button id="reloadBtn" title="Sheetから再読込">⟳</button>
+  <button id="settingsBtn" title="設定">⚙</button>
+</header>
+
+<div class="bar">
+  <button id="micBtn">🎤 音声入力</button>
+  <label class="toggle"><input type="checkbox" id="handsfree" checked> ハンズフリー自動記録</label>
+  <button id="csvBtn">CSV保存</button>
+</div>
+
+<div id="live"><span id="finalTx"></span><span class="interim" id="interimTx"></span></div>
+
+<div id="pending">
+  <textarea id="pendingTx" placeholder="認識テキスト（手修正可）"></textarea>
+  <button class="primary" id="recordBtn" style="min-height:52px;border-radius:10px;">この内容を記録</button>
+</div>
+
+<div id="warnings"></div>
+
+<div class="tableWrap"><table id="grid"><thead></thead><tbody></tbody></table></div>
+
+<div class="modal" id="settingsModal">
+  <div class="card">
+    <h2>設定</h2>
+    <label>バックエンドURL（Apps Script /exec）</label>
+    <input id="backendUrl" placeholder="https://script.google.com/macros/s/AKfy.../exec" />
+    <div class="hint">Apps Scriptをウェブアプリとしてデプロイした「ウェブアプリURL（/exec）」を貼る。</div>
+    <label>共有トークン（任意・Script Property SHARED_TOKEN と一致させる）</label>
+    <input id="token" placeholder="未設定なら空欄" />
+    <label>有効にする大区分（カンマ区切り・空欄=全部）</label>
+    <input id="cats" placeholder="例: 品種,形質" />
+    <div class="hint" id="catsHint">辞書の大区分を選んで「考慮する用語」を個人ごとに絞れる。</div>
+    <div class="row">
+      <button class="ghost" id="cancelCfg">閉じる</button>
+      <button class="primary" id="saveCfg">保存して読込</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const LS = { url:'dy_backend_url', tok:'dy_token', rows:'dy_rows', schema:'dy_schema', cats:'dy_cats' };
+let BACKEND = localStorage.getItem(LS.url) || '';
+let TOKEN   = localStorage.getItem(LS.tok) || '';
+let schema  = JSON.parse(localStorage.getItem(LS.schema) || '[]');
+let rows    = JSON.parse(localStorage.getItem(LS.rows) || '[]'); // [{row:Number|null, values:{key:val}}]
+let CATS    = localStorage.getItem(LS.cats) || '';   // 有効にする大区分（カンマ区切り・空=全部）
+let AVAILABLE_CATS = [];
+
+const $ = id => document.getElementById(id);
+const setStatus = s => $('status').textContent = s;
+
+/* ---------- JSONP (Apps Scriptへのクロスオリジン回避) ---------- */
+function jsonp(params, timeoutMs=20000) {
+  return new Promise((resolve, reject) => {
+    if (!BACKEND) return reject(new Error('バックエンドURL未設定'));
+    const cb = 'dy_cb_' + Date.now() + '_' + Math.floor(Math.random()*1e6);
+    const q = Object.assign({}, params, { callback: cb });
+    if (TOKEN) q.token = TOKEN;
+    const qs = Object.keys(q).map(k => encodeURIComponent(k)+'='+encodeURIComponent(q[k])).join('&');
+    const s = document.createElement('script');
+    const timer = setTimeout(() => { cleanup(); reject(new Error('タイムアウト')); }, timeoutMs);
+    function cleanup(){ clearTimeout(timer); delete window[cb]; s.remove(); }
+    window[cb] = (data) => { cleanup(); resolve(data); };
+    s.onerror = () => { cleanup(); reject(new Error('通信失敗')); };
+    s.src = BACKEND + (BACKEND.indexOf('?')>=0?'&':'?') + qs;
+    document.body.appendChild(s);
+  });
+}
+
+/* ---------- スキーマ・描画 ---------- */
+function colByKey(k){ return schema.find(c => c.key === k); }
+
+function renderHead(){
+  const tr = document.createElement('tr');
+  schema.forEach(c => {
+    const th = document.createElement('th');
+    th.textContent = c.label + (c.unit ? ' ('+c.unit+')' : '');
+    tr.appendChild(th);
+  });
+  const th = document.createElement('th'); th.textContent=''; tr.appendChild(th);
+  const thead = $('grid').tHead; thead.innerHTML=''; thead.appendChild(tr);
+}
+
+function validate(c, v){
+  if (!c || c.type!=='number' || v==='' || v==null) return true;
+  const n = Number(v);
+  if (isNaN(n)) return false;
+  if (c.min!=null && n<c.min) return false;
+  if (c.max!=null && n>c.max) return false;
+  return true;
+}
+
+function renderRows(){
+  const tb = $('grid').tBodies[0] || $('grid').createTBody();
+  tb.innerHTML='';
+  rows.forEach((r, ri) => {
+    const tr = document.createElement('tr');
+    schema.forEach(c => {
+      const td = document.createElement('td');
+      if (c.type==='number') td.className='num';
+      const inp = document.createElement('input');
+      inp.value = (r.values[c.key]==null?'':r.values[c.key]);
+      if (c.type==='number') inp.inputMode='decimal';
+      if (!validate(c, inp.value)) td.classList.add('bad');
+      inp.addEventListener('change', () => onEdit(ri, c, inp, td));
+      td.appendChild(inp); tr.appendChild(td);
+    });
+    const del = document.createElement('td'); del.className='delcol';
+    const b = document.createElement('button'); b.className='delBtn'; b.textContent='削除';
+    b.addEventListener('click', () => { rows.splice(ri,1); persist(); renderRows(); });
+    del.appendChild(b); tr.appendChild(del);
+    tb.appendChild(tr);
+  });
+}
+
+function onEdit(ri, c, inp, td){
+  let v = inp.value.trim();
+  if (c.type==='number' && v!=='') v = Number(v);
+  rows[ri].values[c.key] = v;
+  td.classList.toggle('bad', !validate(c, inp.value));
+  persist();
+  if (rows[ri].row) {
+    jsonp({ action:'update', row:rows[ri].row, key:c.key, value:v })
+      .then(()=>setStatus('保存✓'))
+      .catch(e=>setStatus('保存失敗:'+e.message));
+  }
+}
+
+function persist(){
+  localStorage.setItem(LS.rows, JSON.stringify(rows));
+  localStorage.setItem(LS.schema, JSON.stringify(schema));
+}
+
+/* ---------- バックエンド操作 ---------- */
+async function loadSchema(){
+  setStatus('スキーマ取得中…');
+  const r = await jsonp({ action:'schema' });
+  if (!r.ok) throw new Error(r.error||'schema失敗');
+  schema = r.schema; AVAILABLE_CATS = r.categories || []; persist(); renderHead(); renderRows();
+  setStatus('準備OK'+(AVAILABLE_CATS.length?'（辞書区分: '+AVAILABLE_CATS.join('/')+'）':''));
+}
+
+async function reloadFromSheet(){
+  try{
+    const r = await jsonp({ action:'list', limit:100 });
+    if (r.ok){ rows = r.rows; persist(); renderRows(); setStatus('Sheetから再読込✓'); }
+  }catch(e){ setStatus('再読込失敗:'+e.message); }
+}
+
+async function sendTranscript(text){
+  text = (text||'').trim(); if(!text) return;
+  setStatus('解析中…');
+  try{
+    const r = await jsonp({ action:'parse', transcript:text, cats: CATS });
+    if (!r.ok) { setStatus('解析失敗:'+(r.error||'')); return; }
+    (r.rows||[]).forEach(a => rows.push({ row:a.row, values:a.values }));
+    persist(); renderRows();
+    showWarnings(r.warnings||[]);
+    setStatus('記録✓ +'+(r.appended||0)+'行');
+  }catch(e){ setStatus('通信失敗:'+e.message); }
+}
+
+function showWarnings(ws){
+  $('warnings').textContent = ws.length ? ('⚠ '+ws.join(' / ')) : '';
+}
+
+/* ---------- 音声認識 (Web Speech API) ---------- */
+let recog=null, listening=false;
+function initSpeech(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR){ setStatus('音声認識非対応ブラウザ'); $('micBtn').disabled=true; return; }
+  recog = new SR();
+  recog.lang='ja-JP'; recog.continuous=true; recog.interimResults=true;
+  recog.onresult = (e) => {
+    let interim='', finalTx='';
+    for (let i=e.resultIndex; i<e.results.length; i++){
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalTx += t; else interim += t;
+    }
+    $('interimTx').textContent = interim;
+    if (finalTx){
+      $('finalTx').textContent = finalTx; $('interimTx').textContent='';
+      if ($('handsfree').checked){ sendTranscript(finalTx); }
+      else { $('pending').style.display='flex'; $('pendingTx').value = finalTx; }
+    }
+  };
+  recog.onerror = (e) => { setStatus('認識エラー:'+e.error); };
+  recog.onend = () => { if (listening){ try{recog.start();}catch(_){} } }; // 沈黙で切れたら再開
+}
+function toggleMic(){
+  if (!recog) return;
+  if (listening){ listening=false; recog.stop(); $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 音声入力'; setStatus('停止'); }
+  else { listening=true; try{recog.start();}catch(_){} $('micBtn').classList.add('listening'); $('micBtn').textContent='■ 停止'; setStatus('聞き取り中…'); }
+}
+
+/* ---------- CSV ---------- */
+function exportCsv(){
+  const head = schema.map(c=>c.label);
+  const lines = [head.join(',')];
+  rows.forEach(r => {
+    lines.push(schema.map(c => {
+      const v = r.values[c.key]; const s = (v==null?'':String(v));
+      return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+    }).join(','));
+  });
+  const blob = new Blob(['﻿'+lines.join('\r\n')], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'yacho_'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+/* ---------- 設定モーダル ---------- */
+function openCfg(){
+  $('backendUrl').value=BACKEND; $('token').value=TOKEN; $('cats').value=CATS;
+  if (AVAILABLE_CATS.length) $('catsHint').textContent='利用可能な大区分: '+AVAILABLE_CATS.join(', ')+'（空欄=全部）';
+  $('settingsModal').classList.add('show');
+}
+function closeCfg(){ $('settingsModal').classList.remove('show'); }
+async function saveCfg(){
+  BACKEND = $('backendUrl').value.trim(); TOKEN = $('token').value.trim(); CATS = $('cats').value.trim();
+  localStorage.setItem(LS.url, BACKEND); localStorage.setItem(LS.tok, TOKEN); localStorage.setItem(LS.cats, CATS);
+  closeCfg();
+  try{ await loadSchema(); } catch(e){ setStatus('読込失敗:'+e.message); }
+}
+
+/* ---------- 起動 ---------- */
+$('micBtn').addEventListener('click', toggleMic);
+$('reloadBtn').addEventListener('click', reloadFromSheet);
+$('settingsBtn').addEventListener('click', openCfg);
+$('cancelCfg').addEventListener('click', closeCfg);
+$('saveCfg').addEventListener('click', saveCfg);
+$('csvBtn').addEventListener('click', exportCsv);
+$('recordBtn').addEventListener('click', () => { sendTranscript($('pendingTx').value); $('pending').style.display='none'; });
+
+initSpeech();
+if (schema.length){ renderHead(); renderRows(); }
+if (BACKEND){ loadSchema().catch(e=>setStatus('読込失敗:'+e.message)); }
+else { setStatus('⚙設定からバックエンドURLを入力'); openCfg(); }
+</script>
+</body>
+</html>
