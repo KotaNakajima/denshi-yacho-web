@@ -315,7 +315,8 @@ function renderGuide(){
   const t=document.createElement('span'); t.className='tgt';
   t.textContent='🎯 '+curKey()+' / '+(col?col.label:numCol())+' = '+(cur===''||cur==null?'？':cur);
   const b2=document.createElement('button'); b2.textContent='▶'; b2.onclick=()=>{ if(ptr<rows.length-1){ptr++;renderGuide();} };
-  bar.appendChild(b1); bar.appendChild(t); bar.appendChild(b2);
+  const bx=document.createElement('button'); bx.textContent='✕クリア'; bx.style.fontSize='15px'; bx.onclick=()=>clearCurrent();
+  bar.appendChild(b1); bar.appendChild(t); bar.appendChild(b2); bar.appendChild(bx);
   // 型別ガイド: enum/boolは候補チップ(言っても押しても入る)、数値はヒント
   const hint=document.createElement('div'); hint.className='hintline';
   if(col && col.type==='enum' && (col.allowed||[]).length){
@@ -468,6 +469,69 @@ async function sendTranscript(text){
 }
 function showWarnings(ws){ $('warnings').textContent = ws.length?('⚠ '+ws.join(' / ')):''; }
 
+/* ===== 高速パス: 端末Web Speech＋決定論（ガイド/数字モード専用・LLM/録音不要） ===== */
+let fastRecog=null;
+function fastAvail(){ return !!(window.SpeechRecognition||window.webkitSpeechRecognition); }
+function useFast(){ return (GUIDED||NUMMODE) && numCol() && fastAvail(); }
+function startFast(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  fastRecog=new SR(); fastRecog.lang='ja-JP'; fastRecog.continuous=true; fastRecog.interimResults=true;
+  sessionOn=true; micUI(true); requestWake(); showWarnings([]); $('finalTx').textContent='';
+  $('meter').textContent='⚡ 高速モード（端末認識・値だけ言う）';
+  fastRecog.onresult=(e)=>{ let fin='',interim='';
+    for(let i=e.resultIndex;i<e.results.length;i++){ const t=e.results[i][0].transcript;
+      if(e.results[i].isFinal) fin+=t; else interim+=t; }
+    $('interimTx').textContent=interim;
+    if(fin){ $('interimTx').textContent=''; handleFast(fin.trim()); }
+  };
+  fastRecog.onerror=(e)=>setStatus('認識エラー:'+e.error);
+  fastRecog.onend=()=>{ if(sessionOn){ try{fastRecog.start();}catch(_){} } };
+  try{ fastRecog.start(); }catch(_){}
+}
+function stopFast(){ sessionOn=false; try{ if(fastRecog) fastRecog.stop(); }catch(_){} fastRecog=null;
+  micUI(false); releaseWake(); $('meter').textContent='🎙 — ('+VERSION+')'; setStatus('終了'); }
+
+function handleFast(text){
+  $('finalTx').textContent=text;
+  // コマンド語（修正・移動）＝LLM不要
+  if(/(つぎ|次|スキップ|next)/i.test(text)){ if(ptr<rows.length-1){ptr++; renderGuide();} setStatus('→ '+curKey()); return; }
+  if(/(もどる|戻る|前へ|ひとつ前|back)/i.test(text)){ if(ptr>0){ptr--; renderGuide();} setStatus('← '+curKey()); return; }
+  if(/(クリア|削除|消して|消去|取り消し|やり直し|キャンセル)/.test(text)){ clearCurrent(); return; }
+  if(GUIDED){
+    const col=colByKey(numCol()); const v=extractClient(text,col);
+    if(v===null||v===''){ setStatus('値を取れず:「'+text+'」（言い直すか✕クリア）'); return; }
+    writeCur(numCol(), v);   // 上書き＝修正も兼ねる
+  } else if(NUMMODE){
+    const nums=extractNumsClient(text);
+    if(nums.length<2){ setStatus('「番号 値」が必要:「'+text+'」'); return; }
+    let n=0; for(let i=0;i+1<nums.length;i+=2){ const m=matchCandClient(String(nums[i])); if(m){ writeRowByKey(m, numCol(), Number(nums[i+1])); n++; } }
+    setStatus(n?('記入✓ '+n+'件'):'対象番号なし:「'+text+'」');
+  }
+}
+/* クライアント値抽出（サーバ決定論と同等） */
+function normNumClient(s){ s=String(s||'').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/．/g,'.').replace(/、/g,' ').replace(/。/g,' ');
+  s=s.replace(/[〇零一二三四五六七八九十百]+/g,b=>{ const n=kanjiNumClient(b); return isNaN(n)?b:String(n); }); return s; }
+function kanjiNumClient(s){ const d={'〇':0,'零':0,'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}; let sec=0,used=false;
+  for(const c of s){ if(c in d){sec=sec*10+d[c];used=true;} else if(c==='十'){sec=(sec||1)*10;used=true;} else if(c==='百'){sec=(sec||1)*100;used=true;} else return NaN; } return used?sec:NaN; }
+function extractNumsClient(t){ return (normNumClient(t).match(/\d+(?:\.\d+)?/g)||[]); }
+function extractClient(t,col){ const type=col?col.type:'auto', s=String(t||'').trim();
+  if(type==='int'||type==='float'||type==='number'||type==='auto'){ const n=extractNumsClient(s); return n.length?Number(n[0]):null; }
+  if(type==='bool'){ const b=normBool(s); return b||null; }
+  if(type==='enum'){ const a=col.allowed||[], q=s.replace(/\s/g,''); for(const x of a){ if(q===x) return x; } for(const x of a){ if(q.indexOf(x)>=0||x.indexOf(q)>=0) return x; } return null; }
+  return s; }
+function candKeysClient(){ return rows.map(r=>String(r.values[KEY])); }
+function matchCandClient(numStr){ const cs=candKeysClient(); if(cs.indexOf(numStr)>=0) return numStr; const n=Number(numStr);
+  for(const c of cs){ if(Number(c)===n) return c; } for(const c of cs){ if(Number(String(c).replace(/[^0-9.]/g,''))===n) return c; } return null; }
+/* 書込み（楽観的: 即ローカル反映→裏でupdate） */
+function writeCur(col,v){ const r=rows[ptr]; if(!r) return; r.values[col]=v; renderRows([r.row]);
+  jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:v}).catch(e=>setStatus('保存失敗:'+e.message));
+  setStatus('記入✓ '+curKey()+' '+col+'='+v); guideAdvance(); }
+function clearCurrent(){ const r=rows[ptr], col=numCol(); if(!r||!col) return; r.values[col]=''; renderRows([r.row]);
+  jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:''}).catch(e=>setStatus('保存失敗:'+e.message));
+  setStatus('クリア '+curKey()); }
+function writeRowByKey(key,col,v){ const r=rows.find(x=>String(x.values[KEY])===String(key)); if(!r) return; r.values[col]=v; renderRows([r.row]);
+  jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:v}).catch(e=>setStatus('保存失敗:'+e.message)); }
+
 /* ---------- 音声: ハンズフリーVAD（無音で自動区切り）→Whisper ----------
    セッション開始/終了の1タップだけ。喋り→約1秒の無音で1区切りを自動送信。
    区切りは"自然な間"なので単語の途中で切れない。 */
@@ -475,7 +539,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v12';
+const VERSION='v13';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
@@ -505,8 +569,10 @@ function micUI(on){ const b=$('micBtn'); b.classList.toggle('listening',on);
   b.textContent=on?'🟢 ハンズフリー入力中（押して終了）':'🎤 ハンズフリー開始'; }
 
 async function toggleMic(){
-  if(sessionOn){ stopSession(); return; }
+  if(sessionOn){ if(fastRecog) stopFast(); else stopSession(); return; }
   if(!(FILE&&TAB&&KEY)){ setStatus('ファイル/シート/キー列を選択'); return; }
+  // 高速パス: ガイド/数字モードは端末Web Speechで値だけ拾う（録音/Whisper/LLM/VAD不要）
+  if(useFast()){ startFast(); return; }
   if(!audioSupported()){ setStatus('録音非対応ブラウザ'); return; }
   try{ await ensureStream(); }catch(e){ setStatus('マイク不可:'+e.message); return; }
   recMime=pickMime();
