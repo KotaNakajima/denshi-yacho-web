@@ -31,16 +31,31 @@
   #pending textarea { width:100%; font-size:18px; padding:8px; border:2px solid var(--line); border-radius:8px; min-height:56px; }
   #warnings { padding:6px 12px; color:var(--warn); font-size:15px; }
   .tableWrap { overflow:auto; padding:0 0 120px; }
-  table { border-collapse:collapse; width:max-content; min-width:100%; }
+  table { border-collapse:collapse; width:auto; }
   th,td { border:1px solid var(--line); padding:0; white-space:nowrap; }
-  th { background:#eef2f0; font-size:14px; padding:8px 6px; position:sticky; top:0; }
+  th { background:#eef2f0; font-size:13px; padding:6px 6px; position:sticky; top:0; text-align:center; }
   th.key { background:#d7e8df; }
-  td input { border:none; width:100%; min-width:60px; padding:12px 8px; font-size:18px; background:transparent; }
+  /* 列幅は内容に追従。input は ch 単位で各列ごとに最小化（renderで size 指定） */
+  td input { border:none; padding:9px 6px; font-size:17px; background:transparent; width:auto; min-width:3ch; }
   td.num input { text-align:right; }
   td.key input { font-weight:700; background:#f3f8f5; }
   td.bad input { background:#ffe3e3; color:var(--warn); font-weight:700; }
   tr.hit td { background:#fff8d6; }
   td.delcol { text-align:center; }
+  /* 横向き(landscape)・低い画面高さ: 上部UIを薄くして表を広く */
+  @media (orientation: landscape), (max-height: 480px) {
+    html,body { font-size:16px; }
+    header { padding:5px 10px; }
+    header h1 { font-size:15px; }
+    .pick { padding:5px 10px; gap:6px; }
+    .pick label { flex-basis:auto; font-size:11px; margin:0 4px 0 0; }
+    .pick select { flex:1 1 18%; min-height:38px; font-size:14px; }
+    .bar { padding:6px 10px; gap:6px; top:38px; }
+    .bar button, .toggle { min-height:42px; font-size:15px; }
+    #live { padding:5px 10px; min-height:30px; font-size:16px; }
+    .tableWrap { padding-bottom:70px; }
+    td input { padding:6px 6px; font-size:16px; }
+  }
   .modal { position:fixed; inset:0; background:#0008; display:none; align-items:center; justify-content:center; z-index:20; }
   .modal.show { display:flex; }
   .card { background:#fff; border-radius:14px; padding:18px; width:92%; max-width:520px; max-height:88vh; overflow:auto; }
@@ -223,6 +238,13 @@ function updateMic(){ $('micBtn').disabled = !(FILE && TAB && KEY && recog); }
 /* ---------- 描画 ---------- */
 function colByKey(k){ return columns.find(c=>c.key===k); }
 function isNum(c){ return c && (c.type==='number' || c.type==='auto'); }
+// 全角は約2文字幅で見積もる
+function dispLen(s){ s=String(s==null?'':s); let n=0; for(const ch of s){ n+= (ch.charCodeAt(0)>0xFF?2:1); } return n; }
+function colWidthCh(c){
+  let w=dispLen(c.label)+(c.unit?dispLen(c.unit)+3:0);
+  rows.forEach(r=>{ const v=r.values[c.key]; const l=dispLen(v); if(l>w) w=l; });
+  return Math.max(3, Math.min(w+1, 24)); // 3..24ch にクランプ
+}
 function renderHead(){
   const tr=document.createElement('tr');
   columns.forEach(c=>{ const th=document.createElement('th');
@@ -237,15 +259,18 @@ function validate(c,v){
 }
 function renderRows(hitRows){
   const hits=new Set(hitRows||[]);
+  const widths=columns.map(colWidthCh);
   const tb=$('grid').tBodies[0]||$('grid').createTBody(); tb.innerHTML='';
   rows.forEach((r)=>{
     const tr=document.createElement('tr'); if(hits.has(r.row)) tr.className='hit';
-    columns.forEach(c=>{
+    columns.forEach((c,ci)=>{
       const td=document.createElement('td');
       if(isNum(c)&&c.type==='number') td.className='num';
       if(c.key===KEY) td.classList.add('key');
       const inp=document.createElement('input');
       inp.value=(r.values[c.key]==null?'':r.values[c.key]);
+      inp.size=widths[ci];                         // 列幅を内容に追従
+      inp.style.width=widths[ci]+'ch';
       if(c.type==='number') inp.inputMode='decimal';
       if(c.type==='number'&&!validate(c,inp.value)) td.classList.add('bad');
       inp.addEventListener('change',()=>onEdit(r,c,inp,td));
