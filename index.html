@@ -319,7 +319,8 @@ function renderGuide(){
   t.textContent='🎯 '+curKey()+' / '+(col?col.label:numCol())+' = '+(cur===''||cur==null?'？':cur);
   const b2=document.createElement('button'); b2.textContent='▶'; b2.onclick=()=>{ if(ptr<rows.length-1){ptr++;renderGuide();} };
   const bx=document.createElement('button'); bx.textContent='✕クリア'; bx.style.fontSize='15px'; bx.onclick=()=>clearCurrent();
-  bar.appendChild(b1); bar.appendChild(t); bar.appendChild(b2); bar.appendChild(bx);
+  const bu=document.createElement('button'); bu.textContent='↶元に戻す'; bu.style.fontSize='15px'; bu.onclick=()=>undo();
+  bar.appendChild(b1); bar.appendChild(t); bar.appendChild(b2); bar.appendChild(bx); bar.appendChild(bu);
   // 型別ガイド: enum/boolは候補チップ(言っても押しても入る)、数値はヒント
   const hint=document.createElement('div'); hint.className='hintline';
   if(col && col.type==='enum' && (col.allowed||[]).length){
@@ -339,6 +340,7 @@ function renderGuide(){
 /* ガイド: チップ押下＝対象セルに即記入→次へ（音声不要のフォールバック） */
 function chipSet(val){
   const r=rows[ptr], col=numCol(); if(!r||!col) return;
+  lastEdit={row:r.row, col:col, prev:r.values[col], rowObj:r};
   r.values[col]=val; renderRows([r.row]);
   jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:val})
     .then(()=>{ guideAdvance(); }).catch(e=>setStatus('保存失敗:'+e.message));
@@ -474,36 +476,33 @@ async function sendTranscript(text){
 function showWarnings(ws){ $('warnings').textContent = ws.length?('⚠ '+ws.join(' / ')):''; }
 
 /* ===== 高速パス: 端末Web Speech＋決定論（ガイド/数字モード専用・LLM/録音不要） ===== */
-let fastRecog=null, fastBuf='', fastTimer=null, committedCount=0, finalsCount=0;
-const FAST_DEBOUNCE_MS=650;   // 無音でまとめて確定（途中切れ結合・二重入力防止）
-function commitFast(){ const t=(fastBuf||'').trim(); committedCount=finalsCount; fastBuf=''; $('interimTx').textContent=''; if(t) handleFast(t); }
+let fastRecog=null, fastFinal='';   // 1発話=1認識。結合しない（"6565"複製を根治）
+let lastEdit=null;                  // 直近の書込み {row,col,prev} ＝Undo用
 function fastAvail(){ return !!(window.SpeechRecognition||window.webkitSpeechRecognition); }
 function useFast(){ return (GUIDED||NUMMODE) && numCol() && fastAvail(); }
 function startFast(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  fastRecog=new SR(); fastRecog.lang='ja-JP'; fastRecog.continuous=true; fastRecog.interimResults=true;
-  sessionOn=true; committedCount=0; finalsCount=0; fastBuf=''; micUI(true); requestWake(); showWarnings([]); $('finalTx').textContent='';
-  $('meter').textContent='⚡ 高速モード（端末認識・値だけ言う）';
-  fastRecog.onresult=(e)=>{
-    // 結果配列から「未処理の確定文」を毎回組み直す（再送されても重複しない＝二重入力防止）
-    var finals=[], interim='';
-    for(var i=0;i<e.results.length;i++){ var t=e.results[i][0].transcript; if(e.results[i].isFinal) finals.push(t); else interim+=t; }
-    finalsCount=finals.length;
-    fastBuf=finals.slice(committedCount).join('');         // 既処理の確定は除外
+  fastRecog=new SR(); fastRecog.lang='ja-JP'; fastRecog.continuous=false; fastRecog.interimResults=true; fastRecog.maxAlternatives=1;
+  sessionOn=true; fastFinal=''; micUI(true); requestWake(); showWarnings([]); $('finalTx').textContent='';
+  $('meter').textContent='⚡ 高速モード（1発話ずつ・値だけ言う）';
+  fastRecog.onresult=(e)=>{ var interim='';
+    for(var i=0;i<e.results.length;i++){ var r=e.results[i]; if(r.isFinal) fastFinal=r[0].transcript; else interim+=r[0].transcript; }
     $('interimTx').textContent=interim;
-    clearTimeout(fastTimer); fastTimer=setTimeout(commitFast, FAST_DEBOUNCE_MS);
   };
-  fastRecog.onerror=(e)=>setStatus('認識エラー:'+e.error);
-  fastRecog.onend=()=>{ if(sessionOn){ committedCount=0; finalsCount=0; try{fastRecog.start();}catch(_){} } };
+  fastRecog.onerror=(e)=>{ if(e.error!=='no-speech'&&e.error!=='aborted') setStatus('認識エラー:'+e.error); };
+  fastRecog.onend=()=>{ var t=(fastFinal||'').trim(); fastFinal=''; $('interimTx').textContent='';
+    if(t) handleFast(t);                          // 1発話を1回だけ処理（結合しない＝複製しない）
+    if(sessionOn){ try{fastRecog.start();}catch(_){} } };   // 次の発話へ
   try{ fastRecog.start(); }catch(_){}
 }
-function stopFast(){ sessionOn=false; clearTimeout(fastTimer); fastBuf=''; try{ if(fastRecog) fastRecog.stop(); }catch(_){} fastRecog=null;
+function stopFast(){ sessionOn=false; fastFinal=''; try{ if(fastRecog) fastRecog.stop(); }catch(_){} fastRecog=null;
   micUI(false); releaseWake(); $('meter').textContent='🎙 — ('+VERSION+')'; setStatus('終了'); }
 
 function handleFast(text){
   $('finalTx').textContent=text;
   // コマンド語（修正・移動）＝LLM不要
   if(/(つぎ|次|スキップ|next)/i.test(text)){ if(ptr<rows.length-1){ptr++; renderGuide();} setStatus('→ '+curKey()); return; }
+  if(/(アンドゥ|元に戻す|もとに戻す|もとどおり|undo)/i.test(text)){ undo(); return; }
   if(/(もどる|戻る|前へ|ひとつ前|back)/i.test(text)){ if(ptr>0){ptr--; renderGuide();} setStatus('← '+curKey()); return; }
   if(/(訂正|クリア|削除|消して|消去|取り消し|やり直し|キャンセル)/.test(text)){ clearCurrent(); return; }
   if(GUIDED){
@@ -546,15 +545,25 @@ function candKeysClient(){ return rows.map(r=>String(r.values[KEY])); }
 function matchCandClient(numStr){ const cs=candKeysClient(); if(cs.indexOf(numStr)>=0) return numStr; const n=Number(numStr);
   for(const c of cs){ if(Number(c)===n) return c; } for(const c of cs){ if(Number(String(c).replace(/[^0-9.]/g,''))===n) return c; } return null; }
 /* 書込み（楽観的: 即ローカル反映→裏でupdate） */
-function writeCur(col,v){ const r=rows[ptr]; if(!r) return; r.values[col]=v; renderRows([r.row]);
+function writeCur(col,v){ const r=rows[ptr]; if(!r) return; lastEdit={row:r.row, col:col, prev:r.values[col], rowObj:r}; r.values[col]=v; renderRows([r.row]);
   jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:v}).catch(e=>setStatus('保存失敗:'+e.message));
   if(MANUAL_NEXT){ setStatus('記入✓ '+curKey()+' '+col+'='+v+'（「次」で前進）'); renderGuide(); }
   else { setStatus('記入✓ '+curKey()+' '+col+'='+v); guideAdvance(); } }
-function clearCurrent(){ const r=rows[ptr], col=numCol(); if(!r||!col) return; r.values[col]=''; renderRows([r.row]);
+function clearCurrent(){ const r=rows[ptr], col=numCol(); if(!r||!col) return; lastEdit={row:r.row, col:col, prev:r.values[col], rowObj:r}; r.values[col]=''; renderRows([r.row]);
   jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:''}).catch(e=>setStatus('保存失敗:'+e.message));
   setStatus('クリア '+curKey()); }
-function writeRowByKey(key,col,v){ const r=rows.find(x=>String(x.values[KEY])===String(key)); if(!r) return; r.values[col]=v; renderRows([r.row]);
+function writeRowByKey(key,col,v){ const r=rows.find(x=>String(x.values[KEY])===String(key)); if(!r) return; lastEdit={row:r.row, col:col, prev:r.values[col], rowObj:r}; r.values[col]=v; renderRows([r.row]);
   jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:v}).catch(e=>setStatus('保存失敗:'+e.message)); }
+/* 直前の書込みを確実に元に戻す（複製/誤入力の救済） */
+function undo(){
+  if(!lastEdit){ setStatus('元に戻す対象がありません'); return; }
+  const e=lastEdit; lastEdit=null;
+  e.rowObj.values[e.col]=e.prev;
+  const idx=rows.indexOf(e.rowObj); if(idx>=0) ptr=idx;   // 対象セルへ戻る
+  jsonp({action:'update',fileId:FILE,tab:TAB,row:e.row,key:e.col,value:(e.prev==null?'':e.prev)})
+    .then(()=>{ if(GUIDED) renderGuide(); else renderRows([e.row]); setStatus('↶ 元に戻した（'+e.col+'='+(e.prev===''||e.prev==null?'空':e.prev)+'）'); })
+    .catch(err=>setStatus('元に戻す失敗:'+err.message));
+}
 
 /* ---------- 音声: ハンズフリーVAD（無音で自動区切り）→Whisper ----------
    セッション開始/終了の1タップだけ。喋り→約1秒の無音で1区切りを自動送信。
@@ -563,7 +572,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v18';
+const VERSION='v19';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
