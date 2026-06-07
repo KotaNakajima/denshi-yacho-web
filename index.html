@@ -258,7 +258,7 @@ async function loadColumns(){
 function onKeyChange(){ KEY=$('keySel').value; localStorage.setItem(LS.key,KEY); renderHead(); updateMic();
   setStatus(KEY?('キー列: '+KEY):'キー列を選択'); }
 
-function updateMic(){ $('micBtn').disabled = !(FILE && TAB && KEY && recog); }
+function updateMic(){ $('micBtn').disabled = !(FILE && TAB && KEY && audioSupported()); }
 
 /* ---------- 描画 ---------- */
 function colByKey(k){ return columns.find(c=>c.key===k); }
@@ -364,32 +364,49 @@ async function sendTranscript(text){
 }
 function showWarnings(ws){ $('warnings').textContent = ws.length?('⚠ '+ws.join(' / ')):''; }
 
-/* ---------- 音声認識（プッシュトゥトーク：頭切れ防止） ---------- */
-let recog=null, recording=false;
-function initSpeech(){
-  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){ setStatus('音声認識非対応ブラウザ'); return; }
-  recog=new SR(); recog.lang='ja-JP'; recog.continuous=false; recog.interimResults=true; recog.maxAlternatives=1;
-  recog.onstart=()=>{ setStatus('準備中…'); };
-  // 音声取り込みが実際に始まった合図＝ここで話せば頭が切れない
-  recog.onaudiostart=()=>{ $('micBtn').classList.add('listening'); $('micBtn').textContent='🔴 どうぞ（話す）'; setStatus('🔴 どうぞ話してください'); };
-  recog.onresult=(e)=>{ let interim='',fin='';
-    for(let i=e.resultIndex;i<e.results.length;i++){ const t=e.results[i][0].transcript;
-      if(e.results[i].isFinal) fin+=t; else interim+=t; }
-    $('interimTx').textContent=interim;
-    if(fin){ $('finalTx').textContent=fin; $('interimTx').textContent='';
-      if($('handsfree').checked) sendTranscript(fin);
-      else { $('pending').style.display='flex'; $('pendingTx').value=fin; } }
-  };
-  recog.onerror=(e)=>{ setStatus('認識エラー:'+e.error); };
-  recog.onend=()=>{ recording=false; $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 押して話す'; releaseWake(); };
+/* ---------- 音声: 録音→Whisper(GAS経由)。頭切れ無し・専門用語精度↑ ---------- */
+let mediaRec=null, chunks=[], audioStream=null, recording=false, recMime='audio/webm';
+function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
+function initSpeech(){ if(!audioSupported()) setStatus('録音非対応ブラウザ'); }
+async function ensureStream(){ if(!audioStream) audioStream=await navigator.mediaDevices.getUserMedia({audio:true}); return audioStream; }
+
+async function toggleMic(){
+  if(recording){ try{ mediaRec.stop(); }catch(_){} return; }       // 録音中タップ=停止→送信
+  if(!(FILE&&TAB&&KEY)){ setStatus('ファイル/シート/キー列を選択'); return; }
+  if(!audioSupported()){ setStatus('録音非対応ブラウザ'); return; }
+  try{ await ensureStream(); }catch(e){ setStatus('マイク不可:'+e.message); return; }
+  chunks=[]; showWarnings([]); $('finalTx').textContent=''; $('interimTx').textContent='';
+  recMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+          : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : 'audio/webm');
+  try{ mediaRec=new MediaRecorder(audioStream,{mimeType:recMime}); }
+  catch(_){ mediaRec=new MediaRecorder(audioStream); recMime=mediaRec.mimeType||'audio/webm'; }
+  mediaRec.ondataavailable=ev=>{ if(ev.data&&ev.data.size) chunks.push(ev.data); };
+  mediaRec.onstart=()=>{ recording=true; $('micBtn').classList.add('listening'); $('micBtn').textContent='🔴 録音中（押して停止）'; setStatus('🔴 録音中…話し終えたら停止'); requestWake(); };
+  mediaRec.onstop=async ()=>{ recording=false; $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 押して話す'; releaseWake();
+    const blob=new Blob(chunks,{type:recMime}); await sttSend(blob); };
+  mediaRec.start();
 }
-function toggleMic(){
-  if(!recog) return;
-  if(recording){ try{recog.stop();}catch(_){} return; }  // 録音中タップ=停止
-  recording=true; $('finalTx').textContent=''; $('interimTx').textContent=''; showWarnings([]);
-  requestWake();
-  try{ recog.start(); }catch(_){ recording=false; releaseWake(); }
+
+function blobToB64(blob){ return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(String(fr.result).split(',')[1]); fr.onerror=rej; fr.readAsDataURL(blob); }); }
+function postJSON(obj){
+  return fetch(BACKEND, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body:JSON.stringify(Object.assign({token:TOKEN},obj)), redirect:'follow'}).then(r=>r.json());
+}
+async function sttSend(blob){
+  if(!blob.size){ setStatus('録音が空でした'); return; }
+  setStatus('認識中…');
+  let b64; try{ b64=await blobToB64(blob); }catch(e){ setStatus('変換失敗'); return; }
+  const apply = $('handsfree').checked ? '1':'0';
+  try{
+    const r=await postJSON({action:'stt', audio:b64, mime:recMime, fileId:FILE, tab:TAB, keyCol:KEY, cats:CATS, apply});
+    if(!r.ok){ setStatus('認識失敗:'+(r.error||'')); return; }
+    $('finalTx').textContent=r.transcript||'';
+    if(apply==='1'){
+      const hit=[]; (r.updates||[]).forEach(u=>{ const row=rows.find(x=>x.row===u.row); if(row){ Object.assign(row.values,u.written); hit.push(u.row); } });
+      renderRows(hit); showWarnings(r.warnings||[]);
+      setStatus((r.updates||[]).length?('記入✓ '+r.updates.length+'行'):'該当行なし（warning確認）');
+    } else { $('pending').style.display='flex'; $('pendingTx').value=r.transcript||''; setStatus('確認して記入'); }
+  }catch(e){ setStatus('通信失敗:'+e.message); }
 }
 
 /* Wake Lock: 録音中は画面を消さない */
