@@ -112,6 +112,11 @@
   <select id="tabSel"><option value="">シート…</option></select>
   <select id="keySel"><option value="">キー列…</option></select>
 </div>
+<div class="pick">
+  <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="numMode"> 🔢 数字モード</label>
+  <select id="numColSel"><option value="">記入する列(数字)…</option></select>
+  <span class="hint" style="flex-basis:100%;">ONにすると「番号 値」だけ発話→選んだ列に高速記入（LLM不要・誤認最小）。例「3 65」</span>
+</div>
 
 <div class="bar">
   <button id="micBtn" disabled>🎤 ハンズフリー開始</button>
@@ -154,7 +159,7 @@
 
 <script>
 "use strict";
-const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', folder:'dy_folder', file:'dy_file', tab:'dy_tab', key:'dy_key', hc:'dy_hc', mic:'dy_mic' };
+const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', folder:'dy_folder', file:'dy_file', tab:'dy_tab', key:'dy_key', hc:'dy_hc', mic:'dy_mic', numMode:'dy_numMode', numCol:'dy_numCol' };
 let BACKEND = localStorage.getItem(LS.url) || '';
 let TOKEN   = localStorage.getItem(LS.tok) || '';
 let CATS    = localStorage.getItem(LS.cats) || '';
@@ -255,14 +260,30 @@ async function loadColumns(){
       if(guess) ksel.value=guess.key;
     }
     KEY=ksel.value; localStorage.setItem(LS.key,KEY);
+    populateNumCol();
     // カテゴリ取得（辞書区分）
     try{ const rc=await jsonp({action:'columns',fileId:FILE,tab:TAB}); AVAILABLE_CATS=rc.categories||[]; }catch(_){}
     renderHead(); renderRows(); updateMic();
     setStatus('準備OK '+rows.length+'行'+(KEY?(' / キー:'+KEY):' / キー列を選択'));
   }catch(e){ setStatus('列取得失敗:'+e.message); }
 }
-function onKeyChange(){ KEY=$('keySel').value; localStorage.setItem(LS.key,KEY); renderHead(); updateMic();
+function onKeyChange(){ KEY=$('keySel').value; localStorage.setItem(LS.key,KEY); populateNumCol(); renderHead(); updateMic();
   setStatus(KEY?('キー列: '+KEY):'キー列を選択'); }
+
+/* 数字モードの記入先列（キー以外・数値型優先）を充填 */
+let NUMMODE=localStorage.getItem(LS.numMode)==='1';
+function populateNumCol(){
+  const sel=$('numColSel'); sel.innerHTML='<option value="">記入する列(数字)…</option>';
+  columns.filter(c=>c.key!==KEY).forEach(c=>{ const o=document.createElement('option'); o.value=c.key;
+    o.textContent=c.label+((c.type==='int'||c.type==='float')?'':' ('+c.type+')'); sel.appendChild(o); });
+  const saved=localStorage.getItem(LS.numCol);
+  if(saved && columns.some(c=>c.key===saved)) sel.value=saved;
+  $('numMode').checked=NUMMODE;
+}
+function numCol(){ return $('numColSel').value; }
+function onNumMode(){ NUMMODE=$('numMode').checked; localStorage.setItem(LS.numMode, NUMMODE?'1':'');
+  setStatus(NUMMODE?('🔢 数字モード: '+(numCol()||'列未選択')):'数字モードOFF'); }
+function onNumCol(){ localStorage.setItem(LS.numCol, numCol()); if(NUMMODE) setStatus('🔢 記入先: '+numCol()); }
 
 function updateMic(){ $('micBtn').disabled = !(FILE && TAB && KEY && audioSupported()); }
 
@@ -376,7 +397,8 @@ async function sendTranscript(text){
   if(!(FILE&&TAB&&KEY)){ setStatus('ファイル/シート/キー列を選択してください'); return; }
   setStatus('解析中…');
   try{
-    const r=await jsonp({action:'fill',fileId:FILE,tab:TAB,keyCol:KEY,transcript:text,cats:CATS});
+    const r=await jsonp({action:'fill',fileId:FILE,tab:TAB,keyCol:KEY,transcript:text,cats:CATS,
+      mode:(NUMMODE&&numCol())?'numeric':'', activeCol:(NUMMODE?numCol():'')});
     if(!r.ok){ setStatus('解析失敗:'+(r.error||'')); return; }
     const hit=[];
     (r.updates||[]).forEach(u=>{ const row=rows.find(x=>x.row===u.row);
@@ -396,7 +418,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v9';
+const VERSION='v10';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
@@ -514,7 +536,8 @@ async function sttSend(blob){
   if(!blob.size){ setStatus('録音が空でした'); return; }
   setStatus('認識中…');
   let b64; try{ b64=await blobToB64(blob); }catch(e){ setStatus('変換失敗'); return; }
-  const job={action:'stt', audio:b64, mime:recMime, fileId:FILE, tab:TAB, keyCol:KEY, cats:CATS, apply:$('handsfree').checked?'1':'0'};
+  const job={action:'stt', audio:b64, mime:recMime, fileId:FILE, tab:TAB, keyCol:KEY, cats:CATS, apply:$('handsfree').checked?'1':'0',
+    mode:(NUMMODE&&numCol())?'numeric':'', activeCol:(NUMMODE?numCol():'')};
   try{
     const r=await postJSON(job);
     if(!r.ok){ setStatus('認識失敗:'+(r.error||'')); return; }   // サーバ応答エラーはキューしない(再送しても同じ)
@@ -575,6 +598,8 @@ $('folderSel').addEventListener('change',loadFiles);
 $('fileSel').addEventListener('change',loadTabs);
 $('tabSel').addEventListener('change',loadColumns);
 $('keySel').addEventListener('change',onKeyChange);
+$('numMode').addEventListener('change',onNumMode);
+$('numColSel').addEventListener('change',onNumCol);
 
 window.addEventListener('resize', ()=>{ clearTimeout(window._fitT); window._fitT=setTimeout(fitWidth,150); });
 window.addEventListener('orientationchange', ()=>setTimeout(fitWidth,300));
