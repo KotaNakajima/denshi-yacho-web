@@ -25,11 +25,15 @@
   @keyframes pulse { 0%{opacity:1} 50%{opacity:.7} 100%{opacity:1} }
   .toggle { display:flex; align-items:center; gap:6px; flex:1 1 auto; font-size:15px; border:2px solid var(--line); border-radius:12px; padding:0 10px; min-height:56px; justify-content:center; }
   .toggle input { width:24px; height:24px; }
-  #guideBar { display:flex; align-items:center; gap:10px; padding:10px 12px; background:#fff3cd; border-bottom:2px solid #e0a800; font-size:22px; font-weight:700; }
-  #guideBar .tgt { flex:1; }
+  #guideBar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 12px; background:#fff3cd; border-bottom:2px solid #e0a800; font-size:22px; font-weight:700; }
+  #guideBar .tgt { flex:1 1 auto; min-width:40%; }
   #guideBar button { min-width:54px; min-height:44px; font-size:20px; border-radius:10px; border:2px solid #e0a800; background:#fff; }
+  #guideBar .hintline { flex-basis:100%; font-size:15px; font-weight:400; color:#6b5800; }
+  #guideBar .chip { min-height:46px; padding:0 16px; font-size:20px; font-weight:700; border:2px solid #0b3d2e; border-radius:22px; background:#fff; color:#0b3d2e; }
   body.hc #guideBar { background:#3a3000; border-color:#e0a800; color:#ffe98a; }
   body.hc #guideBar button { background:#000; color:#ffe98a; }
+  body.hc #guideBar .chip { background:#000; color:#9be7c4; border-color:#9be7c4; }
+  body.hc #guideBar .hintline { color:#d8c98a; }
   #meter { padding:6px 12px; font-family:ui-monospace,monospace; font-size:20px; letter-spacing:1px; background:#0b3d2e; color:#9be7c4; border-bottom:1px solid var(--line); white-space:nowrap; overflow:hidden; }
   #meter.hot { color:#ffd23f; }
   #live { padding:10px 12px; min-height:44px; font-size:20px; color:#333; background:#f4f7f5; border-bottom:1px solid var(--line); }
@@ -312,8 +316,27 @@ function renderGuide(){
   t.textContent='🎯 '+curKey()+' / '+(col?col.label:numCol())+' = '+(cur===''||cur==null?'？':cur);
   const b2=document.createElement('button'); b2.textContent='▶'; b2.onclick=()=>{ if(ptr<rows.length-1){ptr++;renderGuide();} };
   bar.appendChild(b1); bar.appendChild(t); bar.appendChild(b2);
+  // 型別ガイド: enum/boolは候補チップ(言っても押しても入る)、数値はヒント
+  const hint=document.createElement('div'); hint.className='hintline';
+  if(col && col.type==='enum' && (col.allowed||[]).length){
+    hint.textContent='次の語を言う（または押す）:';
+    col.allowed.forEach(a=>{ const ch=document.createElement('button'); ch.className='chip'; ch.textContent=a; ch.onclick=()=>chipSet(a); bar.appendChild(ch); });
+  } else if(col && col.type==='bool'){
+    hint.textContent='「はい」か「いいえ」（または押す）:';
+    ['はい','いいえ'].forEach(a=>{ const ch=document.createElement('button'); ch.className='chip'; ch.textContent=a; ch.onclick=()=>chipSet(a==='はい'?'TRUE':'FALSE'); bar.appendChild(ch); });
+  } else if(col){
+    hint.textContent='数値を言ってください（例「65」）。🎤で録音→言うだけ→自動で次へ';
+  }
+  bar.appendChild(hint);
   renderRows([rows[ptr]?rows[ptr].row:null]);  // 対象行をハイライト＆スクロール
-  setStatus('🎯 '+curKey()+' の '+(col?col.label:'')+' を言ってください');
+  setStatus('🎯 '+curKey()+' の '+(col?col.label:'')+' を入力');
+}
+/* ガイド: チップ押下＝対象セルに即記入→次へ（音声不要のフォールバック） */
+function chipSet(val){
+  const r=rows[ptr], col=numCol(); if(!r||!col) return;
+  r.values[col]=val; renderRows([r.row]);
+  jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:val})
+    .then(()=>{ guideAdvance(); }).catch(e=>setStatus('保存失敗:'+e.message));
 }
 function guideAdvance(){ // 記入後に次の行へ
   if(ptr<rows.length-1) ptr++; renderGuide();
@@ -452,7 +475,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v11';
+const VERSION='v12';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
