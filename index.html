@@ -257,9 +257,10 @@ function validate(c,v){
   const n=Number(v); if(isNaN(n)) return false;
   if(c.min!=null&&n<c.min) return false; if(c.max!=null&&n>c.max) return false; return true;
 }
+let lastWidths=[];
 function renderRows(hitRows){
   const hits=new Set(hitRows||[]);
-  const widths=columns.map(colWidthCh);
+  const widths=columns.map(colWidthCh); lastWidths=widths;
   const tb=$('grid').tBodies[0]||$('grid').createTBody(); tb.innerHTML='';
   rows.forEach((r)=>{
     const tr=document.createElement('tr'); if(hits.has(r.row)) tr.className='hit';
@@ -278,7 +279,34 @@ function renderRows(hitRows){
     });
     tb.appendChild(tr);
   });
+  requestAnimationFrame(()=>{ fitWidth(); scrollToHit(hitRows); });
 }
+
+/* 表が画面より狭ければ各列を比例拡大して幅いっぱいに（横向きで余白を埋める） */
+function fitWidth(){
+  const wrap=document.querySelector('.tableWrap'), tbl=$('grid');
+  if(!wrap||!tbl||!columns.length||!lastWidths.length) return;
+  // いったん基準幅へ戻す
+  const trs=tbl.tBodies[0]?tbl.tBodies[0].rows:[];
+  for(const tr of trs) Array.from(tr.cells).forEach((td,ci)=>{ const i=td.querySelector('input'); if(i) i.style.width=lastWidths[ci]+'ch'; });
+  const natural=tbl.scrollWidth, avail=wrap.clientWidth;
+  if(natural>0 && natural < avail-2){
+    const ratio=avail/natural;
+    for(const tr of trs) Array.from(tr.cells).forEach((td,ci)=>{ const i=td.querySelector('input'); if(i) i.style.width=(lastWidths[ci]*ratio)+'ch'; });
+  }
+}
+
+/* 記入された行を画面内（縦中央）へスクロール。最初の更新セルは横にも寄せる */
+function scrollToHit(hitRows){
+  if(!hitRows||!hitRows.length) return;
+  const body=$('grid').tBodies[0]; if(!body) return;
+  const tr=Array.from(body.rows).find(r=>r.classList.contains('hit'));
+  if(!tr) return;
+  tr.scrollIntoView({behavior:'smooth', block:'center'});
+  const filled=tr.querySelector('td.bad input') || Array.from(tr.cells).map(td=>td.querySelector('input')).find(i=>i&&i.value!=='');
+  if(filled) filled.scrollIntoView({behavior:'smooth', inline:'center', block:'nearest'});
+}
+
 function onEdit(r,c,inp,td){
   let v=inp.value.trim(); if(c.type==='number'&&v!=='') v=Number(v);
   r.values[c.key]=v; td.classList.toggle('bad', c.type==='number'&&!validate(c,inp.value));
@@ -368,6 +396,9 @@ $('folderSel').addEventListener('change',loadFiles);
 $('fileSel').addEventListener('change',loadTabs);
 $('tabSel').addEventListener('change',loadColumns);
 $('keySel').addEventListener('change',onKeyChange);
+
+window.addEventListener('resize', ()=>{ clearTimeout(window._fitT); window._fitT=setTimeout(fitWidth,150); });
+window.addEventListener('orientationchange', ()=>setTimeout(fitWidth,300));
 
 initSpeech();
 if(BACKEND) loadFolders(); else { setStatus('⚙設定からバックエンドURLを入力'); openCfg(); }
