@@ -31,16 +31,20 @@
   #pending textarea { width:100%; font-size:18px; padding:8px; border:2px solid var(--line); border-radius:8px; min-height:56px; }
   #warnings { padding:6px 12px; color:var(--warn); font-size:15px; }
   .tableWrap { overflow:auto; padding:0 0 120px; }
-  table { border-collapse:collapse; width:auto; }
-  th,td { border:1px solid var(--line); padding:0; white-space:nowrap; }
-  th { background:#eef2f0; font-size:13px; padding:6px 6px; position:sticky; top:0; text-align:center; }
-  th.key { background:#d7e8df; }
-  /* 列幅は内容に追従。input は ch 単位で各列ごとに最小化（renderで size 指定） */
-  td input { border:none; padding:9px 6px; font-size:17px; background:transparent; width:auto; min-width:3ch; }
+  table { border-collapse:separate; border-spacing:0; width:auto; }
+  th,td { border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:0; white-space:nowrap; }
+  /* ヘッダー行を縦スクロールで固定 */
+  th { background:#eef2f0; font-size:19px; padding:8px 8px; position:sticky; top:0; z-index:2; text-align:center; }
+  /* キー列(プロット名)を横スクロールで固定 */
+  td.key { position:sticky; left:0; z-index:1; background:#f3f8f5; }
+  th.key { background:#d7e8df; left:0; z-index:3; }  /* 左上の角: 縦横とも固定し最前面 */
+  /* 列幅は内容に追従。文字は大きめ。input は ch 単位で各列ごとに指定（renderで width 設定） */
+  td input { border:none; padding:11px 8px; font-size:26px; background:transparent; width:auto; min-width:3ch; }
   td.num input { text-align:right; }
-  td.key input { font-weight:700; background:#f3f8f5; }
+  td.key input { font-weight:700; background:transparent; }
   td.bad input { background:#ffe3e3; color:var(--warn); font-weight:700; }
   tr.hit td { background:#fff8d6; }
+  tr.hit td.key { background:#fdf3c4; }
   td.delcol { text-align:center; }
   /* 横向き(landscape)・低い画面高さ: 上部UIを薄くして表を広く */
   @media (orientation: landscape), (max-height: 480px) {
@@ -54,7 +58,8 @@
     .bar button, .toggle { min-height:42px; font-size:15px; }
     #live { padding:5px 10px; min-height:30px; font-size:16px; }
     .tableWrap { padding-bottom:70px; }
-    td input { padding:6px 6px; font-size:16px; }
+    th { font-size:18px; }
+    td input { padding:8px 8px; font-size:24px; }
   }
   .modal { position:fixed; inset:0; background:#0008; display:none; align-items:center; justify-content:center; z-index:20; }
   .modal.show { display:flex; }
