@@ -262,7 +262,9 @@ function updateMic(){ $('micBtn').disabled = !(FILE && TAB && KEY && audioSuppor
 
 /* ---------- 描画 ---------- */
 function colByKey(k){ return columns.find(c=>c.key===k); }
-function isNum(c){ return c && (c.type==='number' || c.type==='auto'); }
+function isNum(c){ return c && (c.type==='int' || c.type==='float' || c.type==='number' || c.type==='auto'); }
+function rangeOk(c,n){ if(c.min!=null&&n<c.min) return false; if(c.max!=null&&n>c.max) return false; return true; }
+function normBool(v){ const s=String(v==null?'':v).trim(); if(/^(true|1|はい|yes|有|○|t|真)$/i.test(s))return'TRUE'; if(/^(false|0|いいえ|no|無|×|f|偽)$/i.test(s))return'FALSE'; return ''; }
 // 全角は約2文字幅で見積もる
 function dispLen(s){ s=String(s==null?'':s); let n=0; for(const ch of s){ n+= (ch.charCodeAt(0)>0xFF?2:1); } return n; }
 function colWidthCh(c){
@@ -278,9 +280,14 @@ function renderHead(){
   const thead=$('grid').tHead; thead.innerHTML=''; thead.appendChild(tr);
 }
 function validate(c,v){
-  if(!c||c.type!=='number'||v===''||v==null) return true;
-  const n=Number(v); if(isNaN(n)) return false;
-  if(c.min!=null&&n<c.min) return false; if(c.max!=null&&n>c.max) return false; return true;
+  if(!c||v===''||v==null) return true;
+  const s=String(v).trim();
+  if(c.type==='int'){ const n=Number(s); if(isNaN(n)||Math.round(n)!==n) return false; return rangeOk(c,n); }
+  if(c.type==='float'||c.type==='number'){ const n=Number(s); if(isNaN(n)) return false; return rangeOk(c,n); }
+  if(c.type==='auto'){ const n=Number(s); return isNaN(n)?true:rangeOk(c,n); }
+  if(c.type==='bool'){ return normBool(s)!==''; }
+  if(c.type==='enum'){ return (c.allowed||[]).indexOf(s)>=0; }
+  return true; // string
 }
 let lastWidths=[];
 function renderRows(hitRows){
@@ -291,16 +298,27 @@ function renderRows(hitRows){
     const tr=document.createElement('tr'); if(hits.has(r.row)) tr.className='hit';
     columns.forEach((c,ci)=>{
       const td=document.createElement('td');
-      if(isNum(c)&&c.type==='number') td.className='num';
+      if(isNum(c)) td.className='num';
       if(c.key===KEY) td.classList.add('key');
-      const inp=document.createElement('input');
-      inp.value=(r.values[c.key]==null?'':r.values[c.key]);
-      inp.size=widths[ci];                         // 列幅を内容に追従
-      inp.style.width=widths[ci]+'ch';
-      if(c.type==='number') inp.inputMode='decimal';
-      if(c.type==='number'&&!validate(c,inp.value)) td.classList.add('bad');
-      inp.addEventListener('change',()=>onEdit(r,c,inp,td));
-      td.appendChild(inp); tr.appendChild(td);
+      let el;
+      if(c.type==='bool'){
+        el=document.createElement('select');
+        ['','TRUE','FALSE'].forEach(o=>{ const op=document.createElement('option'); op.value=o; op.textContent=o||'—'; el.appendChild(op); });
+        el.value=normBool(r.values[c.key]);
+      } else if(c.type==='enum'){
+        el=document.createElement('select');
+        const op0=document.createElement('option'); op0.value=''; op0.textContent='—'; el.appendChild(op0);
+        (c.allowed||[]).forEach(a=>{ const op=document.createElement('option'); op.value=a; op.textContent=a; el.appendChild(op); });
+        el.value=(r.values[c.key]==null?'':String(r.values[c.key]));
+      } else {
+        el=document.createElement('input');
+        el.value=(r.values[c.key]==null?'':r.values[c.key]);
+        el.size=widths[ci]; el.style.width=widths[ci]+'ch';
+        if(c.type==='int'||c.type==='float'||c.type==='number') el.inputMode='decimal';
+      }
+      if(!validate(c, el.value)) td.classList.add('bad');
+      el.addEventListener('change',()=>onEdit(r,c,el,td));
+      td.appendChild(el); tr.appendChild(td);
     });
     tb.appendChild(tr);
   });
@@ -333,8 +351,9 @@ function scrollToHit(hitRows){
 }
 
 function onEdit(r,c,inp,td){
-  let v=inp.value.trim(); if(c.type==='number'&&v!=='') v=Number(v);
-  r.values[c.key]=v; td.classList.toggle('bad', c.type==='number'&&!validate(c,inp.value));
+  let v=String(inp.value).trim();
+  if((c.type==='int'||c.type==='float'||c.type==='number')&&v!=='') v=Number(v);
+  r.values[c.key]=v; td.classList.toggle('bad', !validate(c,inp.value));
   jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:c.key,value:v})
     .then(()=>setStatus('保存✓')).catch(e=>setStatus('保存失敗:'+e.message));
 }
