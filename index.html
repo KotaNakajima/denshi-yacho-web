@@ -125,7 +125,7 @@
   <select id="numColSel"><option value="">記入する列…</option></select>
   <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="guideMode"> 🎯 ガイド</label>
   <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="numMode"> 🔢 番号+値</label>
-  <span class="hint" style="flex-basis:100%;">🎯ガイド=GUIが対象を指定→「値だけ」発話で自動前進（最精度）。🔢=「番号 値」発話。どちらもLLM不要で高速</span>
+  <span class="hint" style="flex-basis:100%;">🎯ガイド=対象を画面が指定→「値だけ」発話で自動前進。数値列なら「3 65」で3番へジャンプも可（番号モードを内包）。🔢=ポインタ無しで毎回「番号 値」。どちらも端末認識＝高速</span>
 </div>
 <div id="guideBar" style="display:none;"></div>
 
@@ -498,9 +498,19 @@ function handleFast(text){
   if(/(もどる|戻る|前へ|ひとつ前|back)/i.test(text)){ if(ptr>0){ptr--; renderGuide();} setStatus('← '+curKey()); return; }
   if(/(クリア|削除|消して|消去|取り消し|やり直し|キャンセル)/.test(text)){ clearCurrent(); return; }
   if(GUIDED){
-    const col=colByKey(numCol()); const v=extractClient(text,col);
+    const col=colByKey(numCol());
+    const isNumCol=col&&(col.type==='int'||col.type==='float'||col.type==='number'||col.type==='auto');
+    const nums=extractNumsClient(text);
+    // 「番号 値」=ジャンプ記入（数値列で2数値）。「値だけ」=現在の対象に記入
+    if(isNumCol && nums.length>=2){
+      const m=matchCandClient(String(nums[0]));
+      if(m){ const idx=rows.findIndex(r=>String(r.values[KEY])===m); if(idx>=0) ptr=idx;
+        writeCur(numCol(), Number(nums[1])); return; }
+      setStatus('番号"'+nums[0]+'"が対象に無い:「'+text+'」'); return;
+    }
+    const v=extractClient(text,col);
     if(v===null||v===''){ setStatus('値を取れず:「'+text+'」（言い直すか✕クリア）'); return; }
-    writeCur(numCol(), v);   // 上書き＝修正も兼ねる
+    writeCur(numCol(), v);   // 上書き＝修正も兼ねる（現在の対象）
   } else if(NUMMODE){
     const nums=extractNumsClient(text);
     if(nums.length<2){ setStatus('「番号 値」が必要:「'+text+'」'); return; }
@@ -539,7 +549,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v13';
+const VERSION='v14';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
