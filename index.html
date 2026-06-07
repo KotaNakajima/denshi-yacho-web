@@ -62,10 +62,11 @@
   <button id="settingsBtn" title="設定">⚙</button>
 </header>
 
-<!-- 起動時に毎回選ぶ：ファイル → タブ → キー列 -->
+<!-- 起動時に毎回選ぶ：テーマ(フォルダ) → ファイル → タブ → キー列 -->
 <div class="pick">
-  <label>記入先（フォルダ内のスプレッドシート → シート → キー列）</label>
-  <select id="fileSel"><option value="">ファイル選択…</option></select>
+  <label>記入先（研究テーマ → スプレッドシート → シート → キー列）</label>
+  <select id="folderSel"><option value="">研究テーマ…</option></select>
+  <select id="fileSel"><option value="">ファイル…</option></select>
   <select id="tabSel"><option value="">シート…</option></select>
   <select id="keySel"><option value="">キー列…</option></select>
 </div>
@@ -107,10 +108,11 @@
 
 <script>
 "use strict";
-const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', file:'dy_file', tab:'dy_tab', key:'dy_key' };
+const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', folder:'dy_folder', file:'dy_file', tab:'dy_tab', key:'dy_key' };
 let BACKEND = localStorage.getItem(LS.url) || '';
 let TOKEN   = localStorage.getItem(LS.tok) || '';
 let CATS    = localStorage.getItem(LS.cats) || '';
+let FOLDER  = localStorage.getItem(LS.folder) || '';
 let FILE    = localStorage.getItem(LS.file) || '';
 let TAB     = localStorage.getItem(LS.tab) || '';
 let KEY     = localStorage.getItem(LS.key) || '';
@@ -139,17 +141,38 @@ function jsonp(params, timeoutMs=25000){
   });
 }
 
-/* ---------- 選択フロー: files → tabs → columns(keyCol) ---------- */
-async function loadFiles(){
+/* ---------- 選択フロー: folders → files → tabs → columns(keyCol) ---------- */
+async function loadFolders(){
   if(!BACKEND){ setStatus('⚙設定でバックエンドURLを入力'); return; }
+  setStatus('研究テーマ取得中…');
+  try{
+    const r=await jsonp({action:'folders'});
+    if(!r.ok) throw new Error(r.error);
+    const sel=$('folderSel'); sel.innerHTML='<option value="">研究テーマ…</option>';
+    (r.folders||[]).forEach(f=>{ const o=document.createElement('option'); o.value=f.id; o.textContent=f.name; sel.appendChild(o); });
+    if((r.folders||[]).length===0){ // テーマ階層なし（FOLDER_ID未設定）→ 直接ファイル一覧
+      sel.style.display='none'; await loadFiles(); return;
+    }
+    sel.style.display='';
+    if(FOLDER){ sel.value=FOLDER; if(sel.value) await loadFiles(); }
+    setStatus('研究テーマを選択（'+r.folders.length+'件）');
+  }catch(e){ setStatus('テーマ取得失敗:'+e.message); }
+}
+async function loadFiles(){
+  FOLDER=$('folderSel').value; localStorage.setItem(LS.folder,FOLDER);
+  FILE=''; TAB=''; KEY='';
+  $('fileSel').innerHTML='<option value="">ファイル…</option>';
+  $('tabSel').innerHTML='<option value="">シート…</option>'; $('keySel').innerHTML='<option value="">キー列…</option>';
+  columns=[]; rows=[]; renderHead(); renderRows(); updateMic();
   setStatus('ファイル一覧取得中…');
   try{
-    const r=await jsonp({action:'files'});
+    const r=await jsonp({action:'files', folderId:FOLDER});
     if(!r.ok) throw new Error(r.error);
-    const sel=$('fileSel'); sel.innerHTML='<option value="">ファイル選択…</option>';
+    const sel=$('fileSel'); sel.innerHTML='<option value="">ファイル…</option>';
     r.files.forEach(f=>{ const o=document.createElement('option'); o.value=f.id; o.textContent=f.name; sel.appendChild(o); });
-    if(FILE){ sel.value=FILE; if(sel.value) await loadTabs(); }
-    setStatus('ファイル選択待ち（'+r.files.length+'件）');
+    const saved=localStorage.getItem(LS.file);
+    if(saved && r.files.some(f=>f.id===saved)){ sel.value=saved; await loadTabs(); }
+    else setStatus('ファイルを選択（'+r.files.length+'件）');
   }catch(e){ setStatus('一覧失敗:'+e.message); }
 }
 async function loadTabs(){
@@ -305,7 +328,7 @@ function closeCfg(){ $('settingsModal').classList.remove('show'); }
 async function saveCfg(){
   BACKEND=$('backendUrl').value.trim(); TOKEN=$('token').value.trim(); CATS=$('cats').value.trim();
   localStorage.setItem(LS.url,BACKEND); localStorage.setItem(LS.tok,TOKEN); localStorage.setItem(LS.cats,CATS);
-  closeCfg(); await loadFiles();
+  closeCfg(); await loadFolders();
 }
 
 /* ---------- 起動 ---------- */
@@ -316,12 +339,13 @@ $('cancelCfg').addEventListener('click',closeCfg);
 $('saveCfg').addEventListener('click',saveCfg);
 $('csvBtn').addEventListener('click',exportCsv);
 $('recordBtn').addEventListener('click',()=>{ sendTranscript($('pendingTx').value); $('pending').style.display='none'; });
+$('folderSel').addEventListener('change',loadFiles);
 $('fileSel').addEventListener('change',loadTabs);
 $('tabSel').addEventListener('change',loadColumns);
 $('keySel').addEventListener('change',onKeyChange);
 
 initSpeech();
-if(BACKEND) loadFiles(); else { setStatus('⚙設定からバックエンドURLを入力'); openCfg(); }
+if(BACKEND) loadFolders(); else { setStatus('⚙設定からバックエンドURLを入力'); openCfg(); }
 </script>
 </body>
 </html>
