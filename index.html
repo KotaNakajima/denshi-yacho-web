@@ -329,7 +329,7 @@ function renderGuide(){
     hint.textContent='「はい」か「いいえ」（または押す）:';
     ['はい','いいえ'].forEach(a=>{ const ch=document.createElement('button'); ch.className='chip'; ch.textContent=a; ch.onclick=()=>chipSet(a==='はい'?'TRUE':'FALSE'); bar.appendChild(ch); });
   } else if(col){
-    hint.textContent=MANUAL_NEXT ? '値を言う（例「65」）→「次」で前進。言い直すと上書き'
+    hint.textContent=MANUAL_NEXT ? '値を言う（例「65」）→「次」で前進。直すには「訂正」→言い直す'
                                  : '値を言うだけ（例「65」）→自動で次へ';
   }
   bar.appendChild(hint);
@@ -514,12 +514,15 @@ function handleFast(text){
     if(isNumCol && nums.length>=2){
       const m=matchCandClient(String(nums[0]));
       if(m){ const idx=rows.findIndex(r=>String(r.values[KEY])===m); if(idx>=0) ptr=idx;
+        if(cellFilled(ptr)){ renderGuide(); setStatus('⚠ '+curKey()+' は入力済み。「訂正」で消してから'); return; }
         writeCur(numCol(), Number(nums[1])); return; }
       setStatus('番号"'+nums[0]+'"が対象に無い:「'+text+'」'); return;
     }
     const v=extractClient(text,col);
-    if(v===null||v===''){ setStatus('値を取れず:「'+text+'」（言い直すか✕クリア）'); return; }
-    writeCur(numCol(), v);   // 上書き＝修正も兼ねる（現在の対象）
+    if(v===null||v===''){ setStatus('値を取れず:「'+text+'」'); return; }
+    // 既に値があるセルは上書き拒否（「訂正」してからのみ）
+    if(cellFilled(ptr)){ setStatus('⚠ '+curKey()+' は入力済み（'+rows[ptr].values[numCol()]+'）。「訂正」で消す or「次」'); return; }
+    writeCur(numCol(), v);
   } else if(NUMMODE){
     const nums=extractNumsClient(text);
     if(nums.length<2){ setStatus('「番号 値」が必要:「'+text+'」'); return; }
@@ -538,6 +541,7 @@ function extractClient(t,col){ const type=col?col.type:'auto', s=String(t||'').t
   if(type==='bool'){ const b=normBool(s); return b||null; }
   if(type==='enum'){ const a=col.allowed||[], q=s.replace(/\s/g,''); for(const x of a){ if(q===x) return x; } for(const x of a){ if(q.indexOf(x)>=0||x.indexOf(q)>=0) return x; } return null; }
   return s; }
+function cellFilled(i){ const c=numCol(); const v=(rows[i]&&c)?rows[i].values[c]:''; return !(v===''||v==null); }
 function candKeysClient(){ return rows.map(r=>String(r.values[KEY])); }
 function matchCandClient(numStr){ const cs=candKeysClient(); if(cs.indexOf(numStr)>=0) return numStr; const n=Number(numStr);
   for(const c of cs){ if(Number(c)===n) return c; } for(const c of cs){ if(Number(String(c).replace(/[^0-9.]/g,''))===n) return c; } return null; }
@@ -559,7 +563,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v17';
+const VERSION='v18';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
