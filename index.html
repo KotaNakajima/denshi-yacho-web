@@ -72,12 +72,32 @@
   .primary { background:var(--accent); color:#fff; }
   .ghost { background:#fff; color:var(--accent); }
   .hint { font-size:13px; color:#666; margin-top:4px; }
+  /* 高コントラスト(黒地・白大文字)テーマ: OLEDで消費電力・発熱を下げる。日陰(つばバイザー)前提で可読 */
+  body.hc { background:#000; color:#fff; }
+  body.hc header { background:#000; border-bottom:1px solid #444; }
+  body.hc .pick, body.hc .bar, body.hc #live { background:#000; border-color:#444; color:#fff; }
+  body.hc .pick select { background:#000; color:#fff; border-color:#666; }
+  body.hc .bar button, body.hc .toggle { background:#000; color:#fff; border-color:#888; }
+  body.hc #micBtn.listening { background:#fff; color:#000; }
+  body.hc #live { color:#fff; } body.hc #live .interim { color:#aaa; }
+  body.hc th { background:#111; color:#fff; }
+  body.hc th.key { background:#1a2a20; }
+  body.hc td input { color:#fff; }
+  body.hc td.key { background:#0c0c0c; }
+  body.hc td.key input { background:transparent; }
+  body.hc tr.hit td { background:#3a3000; }
+  body.hc tr.hit td.key { background:#332b00; }
+  body.hc td.bad input { background:#5a0000; color:#ffb3b3; }
+  body.hc th,body.hc td { border-color:#333; }
+  #hcBtn.on { background:var(--accent); color:#fff; }
+  body.hc #hcBtn.on { background:#fff; color:#000; }
 </style>
 </head>
 <body>
 <header>
   <h1>電子野帳</h1>
   <span id="status">—</span>
+  <button id="hcBtn" title="高コントラスト(黒地・省電力)">🌓</button>
   <button id="reloadBtn" title="再読込">⟳</button>
   <button id="settingsBtn" title="設定">⚙</button>
 </header>
@@ -128,7 +148,7 @@
 
 <script>
 "use strict";
-const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', folder:'dy_folder', file:'dy_file', tab:'dy_tab', key:'dy_key' };
+const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', folder:'dy_folder', file:'dy_file', tab:'dy_tab', key:'dy_key', hc:'dy_hc' };
 let BACKEND = localStorage.getItem(LS.url) || '';
 let TOKEN   = localStorage.getItem(LS.tok) || '';
 let CATS    = localStorage.getItem(LS.cats) || '';
@@ -363,9 +383,19 @@ function initSpeech(){
 }
 function toggleMic(){
   if(!recog) return;
-  if(listening){ listening=false; recog.stop(); $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 音声入力'; setStatus('停止'); }
-  else { listening=true; try{recog.start();}catch(_){} $('micBtn').classList.add('listening'); $('micBtn').textContent='■ 停止'; setStatus('聞き取り中…'); }
+  if(listening){ listening=false; recog.stop(); $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 音声入力'; setStatus('停止'); releaseWake(); }
+  else { listening=true; try{recog.start();}catch(_){} $('micBtn').classList.add('listening'); $('micBtn').textContent='■ 停止'; setStatus('聞き取り中…'); requestWake(); }
 }
+
+/* Wake Lock: 聞き取り中は画面を消さない */
+let wakeLock=null;
+async function requestWake(){ try{ if('wakeLock' in navigator) wakeLock=await navigator.wakeLock.request('screen'); }catch(_){} }
+async function releaseWake(){ try{ if(wakeLock){ await wakeLock.release(); wakeLock=null; } }catch(_){} }
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && listening) requestWake(); });
+
+/* 高コントラスト(黒地)トグル: OLEDで省電力・発熱低減。つけっぱOK */
+function applyHC(on){ document.body.classList.toggle('hc', on); $('hcBtn').classList.toggle('on', on); localStorage.setItem(LS.hc, on?'1':''); }
+function toggleHC(){ applyHC(!document.body.classList.contains('hc')); }
 
 /* ---------- CSV ---------- */
 function exportCsv(){
@@ -397,6 +427,7 @@ $('cancelCfg').addEventListener('click',closeCfg);
 $('saveCfg').addEventListener('click',saveCfg);
 $('csvBtn').addEventListener('click',exportCsv);
 $('recordBtn').addEventListener('click',()=>{ sendTranscript($('pendingTx').value); $('pending').style.display='none'; });
+$('hcBtn').addEventListener('click',toggleHC);
 $('folderSel').addEventListener('change',loadFiles);
 $('fileSel').addEventListener('change',loadTabs);
 $('tabSel').addEventListener('change',loadColumns);
@@ -405,6 +436,7 @@ $('keySel').addEventListener('change',onKeyChange);
 window.addEventListener('resize', ()=>{ clearTimeout(window._fitT); window._fitT=setTimeout(fitWidth,150); });
 window.addEventListener('orientationchange', ()=>setTimeout(fitWidth,300));
 
+applyHC(localStorage.getItem(LS.hc)==='1');
 initSpeech();
 if(BACKEND) loadFolders(); else { setStatus('⚙設定からバックエンドURLを入力'); openCfg(); }
 </script>
