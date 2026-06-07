@@ -389,8 +389,8 @@ function showWarnings(ws){ $('warnings').textContent = ws.length?('⚠ '+ws.join
 let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
-// しきい値（実機で調整可）
-const VAD_THRESH=0.018, SILENCE_MS=900, MIN_SPEECH_MS=350, MAX_SEG_MS=15000;
+// しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
+let VAD_THRESH=0.010; const SILENCE_MS=1300, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
 function initSpeech(){ if(!audioSupported()) setStatus('録音非対応ブラウザ'); }
@@ -431,7 +431,10 @@ function startSeg(){
   segRec.ondataavailable=ev=>{ if(ev.data&&ev.data.size) segChunks.push(ev.data); };
   segRec.onstop=()=>{
     const dur=speechStart?(Date.now()-speechStart):0;
-    if(sendSeg && speaking && dur>MIN_SPEECH_MS){ sttSend(new Blob(segChunks,{type:recMime})); }
+    const blob=new Blob(segChunks,{type:recMime});
+    // 無音/極小クリップは送らない（Whisper幻聴の原因を断つ）
+    if(sendSeg && speaking && dur>MIN_SPEECH_MS && blob.size>=MIN_BYTES){ sttSend(blob); }
+    else if(sendSeg && sessionOn){ setStatus('🟢 待機中（短すぎ/無音はスキップ）'); }
     if(sessionOn) startSeg();   // 次の区切りへ
   };
   segRec.start(100);  // timesliceでチャンク取得
@@ -441,8 +444,12 @@ function vadTick(){
   const buf=new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(buf);
   let sum=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; }
   const rms=Math.sqrt(sum/buf.length), now=Date.now();
-  if(rms>VAD_THRESH){ if(!speaking){ speaking=true; speechStart=now; setStatus('🔴 認識中…'); } silenceAt=0; }
+  if(rms>VAD_THRESH){ if(!speaking){ speaking=true; speechStart=now; setStatus('🔴 録音中…'); } silenceAt=0; }
   else if(speaking){ if(!silenceAt) silenceAt=now; else if(now-silenceAt>SILENCE_MS){ cutSeg(); } }
+  else { // 待機中はマイク音量バーを表示（しきい値=5本目。届かないと録音開始しない→感度調整の目安）
+    const lv=Math.min(15, Math.round(rms/VAD_THRESH*5));
+    setStatus('🟢 待機 '+'|'.repeat(lv)+'·'.repeat(Math.max(0,5-lv)));
+  }
   if(speaking && speechStart && now-speechStart>MAX_SEG_MS) cutSeg();  // 長すぎ保護
 }
 function cutSeg(){ sendSeg=true; try{ if(segRec&&segRec.state!=='inactive') segRec.stop(); }catch(_){} }
