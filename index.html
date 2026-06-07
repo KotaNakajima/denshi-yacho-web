@@ -25,6 +25,8 @@
   @keyframes pulse { 0%{opacity:1} 50%{opacity:.7} 100%{opacity:1} }
   .toggle { display:flex; align-items:center; gap:6px; flex:1 1 auto; font-size:15px; border:2px solid var(--line); border-radius:12px; padding:0 10px; min-height:56px; justify-content:center; }
   .toggle input { width:24px; height:24px; }
+  #meter { padding:6px 12px; font-family:ui-monospace,monospace; font-size:20px; letter-spacing:1px; background:#0b3d2e; color:#9be7c4; border-bottom:1px solid var(--line); white-space:nowrap; overflow:hidden; }
+  #meter.hot { color:#ffd23f; }
   #live { padding:10px 12px; min-height:44px; font-size:20px; color:#333; background:#f4f7f5; border-bottom:1px solid var(--line); }
   #live .interim { color:#888; }
   #pending { padding:10px 12px; display:none; gap:8px; border-bottom:1px solid var(--line); }
@@ -117,6 +119,7 @@
   <button id="csvBtn">CSV</button>
 </div>
 
+<div id="meter">🎙 —</div>
 <div id="live"><span id="finalTx"></span><span class="interim" id="interimTx"></span></div>
 
 <div id="pending">
@@ -390,7 +393,8 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-let VAD_THRESH=0.010; const SILENCE_MS=1300, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
+const VERSION='v8';
+let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
 function initSpeech(){ if(!audioSupported()) setStatus('録音非対応ブラウザ'); }
@@ -422,7 +426,7 @@ function stopSession(){
   sessionOn=false; if(vadTimer){ clearInterval(vadTimer); vadTimer=null; }
   sendSeg=true; try{ if(segRec&&segRec.state!=='inactive') segRec.stop(); }catch(_){}
   try{ if(vadCtx) vadCtx.close(); }catch(_){}
-  micUI(false); releaseWake(); setStatus('終了');
+  micUI(false); releaseWake(); setStatus('終了'); $('meter').textContent='🎙 — ('+VERSION+')'; $('meter').classList.remove('hot');
 }
 function startSeg(){
   segChunks=[]; speaking=false; speechStart=0; silenceAt=0; sendSeg=false;
@@ -444,12 +448,12 @@ function vadTick(){
   const buf=new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(buf);
   let sum=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; }
   const rms=Math.sqrt(sum/buf.length), now=Date.now();
+  // 音量メーター（常時）。5本目=しきい値。声で5本目を越えれば録音開始
+  const lv=Math.min(20, Math.round(rms/VAD_THRESH*5));
+  const m=$('meter'); m.textContent=(speaking?'🔴 ':'🎙 ')+'|'.repeat(lv)+'·'.repeat(Math.max(0,5-lv))+(lv>=5?' ◀しきい値':'');
+  m.classList.toggle('hot', rms>VAD_THRESH);
   if(rms>VAD_THRESH){ if(!speaking){ speaking=true; speechStart=now; setStatus('🔴 録音中…'); } silenceAt=0; }
   else if(speaking){ if(!silenceAt) silenceAt=now; else if(now-silenceAt>SILENCE_MS){ cutSeg(); } }
-  else { // 待機中はマイク音量バーを表示（しきい値=5本目。届かないと録音開始しない→感度調整の目安）
-    const lv=Math.min(15, Math.round(rms/VAD_THRESH*5));
-    setStatus('🟢 待機 '+'|'.repeat(lv)+'·'.repeat(Math.max(0,5-lv)));
-  }
   if(speaking && speechStart && now-speechStart>MAX_SEG_MS) cutSeg();  // 長すぎ保護
 }
 function cutSeg(){ sendSeg=true; try{ if(segRec&&segRec.state!=='inactive') segRec.stop(); }catch(_){} }
@@ -552,6 +556,7 @@ window.addEventListener('resize', ()=>{ clearTimeout(window._fitT); window._fitT
 window.addEventListener('orientationchange', ()=>setTimeout(fitWidth,300));
 
 applyHC(localStorage.getItem(LS.hc)==='1');
+$('meter').textContent='🎙 — ('+VERSION+')';
 initSpeech();
 if(BACKEND) loadFolders(); else { setStatus('⚙設定からバックエンドURLを入力'); openCfg(); }
 </script>
