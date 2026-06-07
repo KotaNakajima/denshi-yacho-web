@@ -142,6 +142,9 @@
     <label>有効にする大区分（カンマ区切り・空=全部）</label>
     <input id="cats" placeholder="例: 品種,形質" />
     <div class="hint" id="catsHint">辞書の大区分を選んで考慮範囲を個人ごとに絞れる。</div>
+    <label>マイク（外部ラベリアを選ぶと口元集音で精度↑）</label>
+    <select id="micSel" style="width:100%;font-size:16px;padding:10px;border:2px solid var(--line);border-radius:8px;"><option value="">既定のマイク</option></select>
+    <div class="hint">2.4GHz無線＋USB-C受信機が高音質。Bluetoothは帯域が落ち逆効果のことあり。「許可」後に一覧が出ます。</div>
     <div class="row">
       <button class="ghost" id="cancelCfg">閉じる</button>
       <button class="primary" id="saveCfg">保存</button>
@@ -151,7 +154,7 @@
 
 <script>
 "use strict";
-const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', folder:'dy_folder', file:'dy_file', tab:'dy_tab', key:'dy_key', hc:'dy_hc' };
+const LS = { url:'dy_backend_url', tok:'dy_token', cats:'dy_cats', folder:'dy_folder', file:'dy_file', tab:'dy_tab', key:'dy_key', hc:'dy_hc', mic:'dy_mic' };
 let BACKEND = localStorage.getItem(LS.url) || '';
 let TOKEN   = localStorage.getItem(LS.tok) || '';
 let CATS    = localStorage.getItem(LS.cats) || '';
@@ -393,12 +396,30 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v8';
+const VERSION='v9';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
 function initSpeech(){ if(!audioSupported()) setStatus('録音非対応ブラウザ'); }
-async function ensureStream(){ if(!audioStream) audioStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); return audioStream; }
+let MIC=localStorage.getItem(LS.mic)||'';
+async function ensureStream(){
+  if(audioStream) return audioStream;
+  const a={echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+  if(MIC) a.deviceId={exact:MIC};
+  try{ audioStream=await navigator.mediaDevices.getUserMedia({audio:a}); }
+  catch(e){ if(MIC){ MIC=''; audioStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); } else throw e; }
+  return audioStream;
+}
+async function populateMics(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.enumerateDevices) return;
+  try{ // ラベル取得には一度許可が必要
+    if(!audioStream){ try{ const s=await navigator.mediaDevices.getUserMedia({audio:true}); s.getTracks().forEach(t=>t.stop()); }catch(_){} }
+    const devs=await navigator.mediaDevices.enumerateDevices();
+    const sel=$('micSel'); sel.innerHTML='<option value="">既定のマイク</option>';
+    devs.filter(d=>d.kind==='audioinput').forEach(d=>{ const o=document.createElement('option'); o.value=d.deviceId; o.textContent=d.label||('マイク '+d.deviceId.slice(0,6)); sel.appendChild(o); });
+    sel.value=MIC;
+  }catch(_){}
+}
 function pickMime(){ return MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus'
   :(MediaRecorder.isTypeSupported('audio/mp4')?'audio/mp4':'audio/webm'); }
 function micUI(on){ const b=$('micBtn'); b.classList.toggle('listening',on);
@@ -530,10 +551,13 @@ function exportCsv(){
 /* ---------- 設定 ---------- */
 function openCfg(){ $('backendUrl').value=BACKEND; $('token').value=TOKEN; $('cats').value=CATS;
   if(AVAILABLE_CATS.length) $('catsHint').textContent='利用可能な大区分: '+AVAILABLE_CATS.join(', ')+'（空=全部）';
+  populateMics();
   $('settingsModal').classList.add('show'); }
 function closeCfg(){ $('settingsModal').classList.remove('show'); }
 async function saveCfg(){
   BACKEND=$('backendUrl').value.trim(); TOKEN=$('token').value.trim(); CATS=$('cats').value.trim();
+  const newMic=$('micSel').value;
+  if(newMic!==MIC){ MIC=newMic; localStorage.setItem(LS.mic,MIC); if(audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; } } // マイク変更→次回再取得
   localStorage.setItem(LS.url,BACKEND); localStorage.setItem(LS.tok,TOKEN); localStorage.setItem(LS.cats,CATS);
   closeCfg(); await loadFolders();
 }
