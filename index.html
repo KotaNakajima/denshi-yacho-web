@@ -112,7 +112,7 @@
 </div>
 
 <div class="bar">
-  <button id="micBtn" disabled>🎤 音声入力</button>
+  <button id="micBtn" disabled>🎤 押して話す</button>
   <label class="toggle"><input type="checkbox" id="handsfree" checked> 自動記録</label>
   <button id="csvBtn">CSV</button>
 </div>
@@ -364,12 +364,15 @@ async function sendTranscript(text){
 }
 function showWarnings(ws){ $('warnings').textContent = ws.length?('⚠ '+ws.join(' / ')):''; }
 
-/* ---------- 音声認識 ---------- */
-let recog=null, listening=false;
+/* ---------- 音声認識（プッシュトゥトーク：頭切れ防止） ---------- */
+let recog=null, recording=false;
 function initSpeech(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){ setStatus('音声認識非対応ブラウザ'); return; }
-  recog=new SR(); recog.lang='ja-JP'; recog.continuous=true; recog.interimResults=true;
+  recog=new SR(); recog.lang='ja-JP'; recog.continuous=false; recog.interimResults=true; recog.maxAlternatives=1;
+  recog.onstart=()=>{ setStatus('準備中…'); };
+  // 音声取り込みが実際に始まった合図＝ここで話せば頭が切れない
+  recog.onaudiostart=()=>{ $('micBtn').classList.add('listening'); $('micBtn').textContent='🔴 どうぞ（話す）'; setStatus('🔴 どうぞ話してください'); };
   recog.onresult=(e)=>{ let interim='',fin='';
     for(let i=e.resultIndex;i<e.results.length;i++){ const t=e.results[i][0].transcript;
       if(e.results[i].isFinal) fin+=t; else interim+=t; }
@@ -378,20 +381,22 @@ function initSpeech(){
       if($('handsfree').checked) sendTranscript(fin);
       else { $('pending').style.display='flex'; $('pendingTx').value=fin; } }
   };
-  recog.onerror=(e)=>setStatus('認識エラー:'+e.error);
-  recog.onend=()=>{ if(listening){ try{recog.start();}catch(_){} } };
+  recog.onerror=(e)=>{ setStatus('認識エラー:'+e.error); };
+  recog.onend=()=>{ recording=false; $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 押して話す'; releaseWake(); };
 }
 function toggleMic(){
   if(!recog) return;
-  if(listening){ listening=false; recog.stop(); $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 音声入力'; setStatus('停止'); releaseWake(); }
-  else { listening=true; try{recog.start();}catch(_){} $('micBtn').classList.add('listening'); $('micBtn').textContent='■ 停止'; setStatus('聞き取り中…'); requestWake(); }
+  if(recording){ try{recog.stop();}catch(_){} return; }  // 録音中タップ=停止
+  recording=true; $('finalTx').textContent=''; $('interimTx').textContent=''; showWarnings([]);
+  requestWake();
+  try{ recog.start(); }catch(_){ recording=false; releaseWake(); }
 }
 
-/* Wake Lock: 聞き取り中は画面を消さない */
+/* Wake Lock: 録音中は画面を消さない */
 let wakeLock=null;
 async function requestWake(){ try{ if('wakeLock' in navigator) wakeLock=await navigator.wakeLock.request('screen'); }catch(_){} }
 async function releaseWake(){ try{ if(wakeLock){ await wakeLock.release(); wakeLock=null; } }catch(_){} }
-document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && listening) requestWake(); });
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && recording) requestWake(); });
 
 /* 高コントラスト(黒地)トグル: OLEDで省電力・発熱低減。つけっぱOK */
 function applyHC(on){ document.body.classList.toggle('hc', on); $('hcBtn').classList.toggle('on', on); localStorage.setItem(LS.hc, on?'1':''); }
