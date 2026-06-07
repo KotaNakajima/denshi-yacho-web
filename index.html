@@ -470,7 +470,9 @@ async function sendTranscript(text){
 function showWarnings(ws){ $('warnings').textContent = ws.length?('⚠ '+ws.join(' / ')):''; }
 
 /* ===== 高速パス: 端末Web Speech＋決定論（ガイド/数字モード専用・LLM/録音不要） ===== */
-let fastRecog=null;
+let fastRecog=null, fastBuf='', fastTimer=null;
+const FAST_DEBOUNCE_MS=600;   // 無音でまとめて確定（途中切れ・二重入力を防ぐ）
+function commitFast(){ const t=fastBuf.trim(); fastBuf=''; $('interimTx').textContent=''; if(t) handleFast(t); }
 function fastAvail(){ return !!(window.SpeechRecognition||window.webkitSpeechRecognition); }
 function useFast(){ return (GUIDED||NUMMODE) && numCol() && fastAvail(); }
 function startFast(){
@@ -482,13 +484,14 @@ function startFast(){
     for(let i=e.resultIndex;i<e.results.length;i++){ const t=e.results[i][0].transcript;
       if(e.results[i].isFinal) fin+=t; else interim+=t; }
     $('interimTx').textContent=interim;
-    if(fin){ $('interimTx').textContent=''; handleFast(fin.trim()); }
+    if(fin) fastBuf+=fin;                                  // 確定断片を溜める
+    if(fin||interim){ clearTimeout(fastTimer); fastTimer=setTimeout(commitFast, FAST_DEBOUNCE_MS); }
   };
   fastRecog.onerror=(e)=>setStatus('認識エラー:'+e.error);
   fastRecog.onend=()=>{ if(sessionOn){ try{fastRecog.start();}catch(_){} } };
   try{ fastRecog.start(); }catch(_){}
 }
-function stopFast(){ sessionOn=false; try{ if(fastRecog) fastRecog.stop(); }catch(_){} fastRecog=null;
+function stopFast(){ sessionOn=false; clearTimeout(fastTimer); fastBuf=''; try{ if(fastRecog) fastRecog.stop(); }catch(_){} fastRecog=null;
   micUI(false); releaseWake(); $('meter').textContent='🎙 — ('+VERSION+')'; setStatus('終了'); }
 
 function handleFast(text){
@@ -549,7 +552,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v14';
+const VERSION='v15';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
