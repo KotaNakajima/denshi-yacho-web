@@ -25,6 +25,11 @@
   @keyframes pulse { 0%{opacity:1} 50%{opacity:.7} 100%{opacity:1} }
   .toggle { display:flex; align-items:center; gap:6px; flex:1 1 auto; font-size:15px; border:2px solid var(--line); border-radius:12px; padding:0 10px; min-height:56px; justify-content:center; }
   .toggle input { width:24px; height:24px; }
+  #guideBar { display:flex; align-items:center; gap:10px; padding:10px 12px; background:#fff3cd; border-bottom:2px solid #e0a800; font-size:22px; font-weight:700; }
+  #guideBar .tgt { flex:1; }
+  #guideBar button { min-width:54px; min-height:44px; font-size:20px; border-radius:10px; border:2px solid #e0a800; background:#fff; }
+  body.hc #guideBar { background:#3a3000; border-color:#e0a800; color:#ffe98a; }
+  body.hc #guideBar button { background:#000; color:#ffe98a; }
   #meter { padding:6px 12px; font-family:ui-monospace,monospace; font-size:20px; letter-spacing:1px; background:#0b3d2e; color:#9be7c4; border-bottom:1px solid var(--line); white-space:nowrap; overflow:hidden; }
   #meter.hot { color:#ffd23f; }
   #live { padding:10px 12px; min-height:44px; font-size:20px; color:#333; background:#f4f7f5; border-bottom:1px solid var(--line); }
@@ -113,10 +118,12 @@
   <select id="keySel"><option value="">キー列…</option></select>
 </div>
 <div class="pick">
-  <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="numMode"> 🔢 数字モード</label>
-  <select id="numColSel"><option value="">記入する列(数字)…</option></select>
-  <span class="hint" style="flex-basis:100%;">ONにすると「番号 値」だけ発話→選んだ列に高速記入（LLM不要・誤認最小）。例「3 65」</span>
+  <select id="numColSel"><option value="">記入する列…</option></select>
+  <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="guideMode"> 🎯 ガイド</label>
+  <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="numMode"> 🔢 番号+値</label>
+  <span class="hint" style="flex-basis:100%;">🎯ガイド=GUIが対象を指定→「値だけ」発話で自動前進（最精度）。🔢=「番号 値」発話。どちらもLLM不要で高速</span>
 </div>
+<div id="guideBar" style="display:none;"></div>
 
 <div class="bar">
   <button id="micBtn" disabled>🎤 ハンズフリー開始</button>
@@ -264,6 +271,7 @@ async function loadColumns(){
     // カテゴリ取得（辞書区分）
     try{ const rc=await jsonp({action:'columns',fileId:FILE,tab:TAB}); AVAILABLE_CATS=rc.categories||[]; }catch(_){}
     renderHead(); renderRows(); updateMic();
+    $('guideMode').checked=GUIDED; if(GUIDED){ ptr=firstUnfilledPtr(); renderGuide(); }
     setStatus('準備OK '+rows.length+'行'+(KEY?(' / キー:'+KEY):' / キー列を選択'));
   }catch(e){ setStatus('列取得失敗:'+e.message); }
 }
@@ -281,9 +289,35 @@ function populateNumCol(){
   $('numMode').checked=NUMMODE;
 }
 function numCol(){ return $('numColSel').value; }
-function onNumMode(){ NUMMODE=$('numMode').checked; localStorage.setItem(LS.numMode, NUMMODE?'1':'');
-  setStatus(NUMMODE?('🔢 数字モード: '+(numCol()||'列未選択')):'数字モードOFF'); }
-function onNumCol(){ localStorage.setItem(LS.numCol, numCol()); if(NUMMODE) setStatus('🔢 記入先: '+numCol()); }
+function onNumMode(){ NUMMODE=$('numMode').checked; if(NUMMODE&&GUIDED){ GUIDED=false; $('guideMode').checked=false; renderGuide(); } localStorage.setItem(LS.numMode, NUMMODE?'1':'');
+  setStatus(NUMMODE?('🔢 番号+値: '+(numCol()||'列未選択')):'番号+値 OFF'); }
+function onNumCol(){ localStorage.setItem(LS.numCol, numCol()); if(GUIDED) renderGuide(); if(NUMMODE) setStatus('🔢 記入先: '+numCol()); }
+
+/* ガイドモード: 対象セル(行ptr×記入列)をGUIが固定→値だけ発話→自動前進 */
+let GUIDED=localStorage.getItem('dy_guide')==='1', ptr=0;
+function onGuideMode(){ GUIDED=$('guideMode').checked; localStorage.setItem('dy_guide', GUIDED?'1':'');
+  if(GUIDED){ if(NUMMODE){NUMMODE=false;$('numMode').checked=false;} if(!numCol()){ const c=columns.find(x=>x.key!==KEY); if(c){$('numColSel').value=c.key; onNumCol();} } ptr=firstUnfilledPtr(); }
+  renderGuide(); }
+function firstUnfilledPtr(){ const col=numCol(); if(!col) return 0;
+  for(let i=0;i<rows.length;i++){ const v=rows[i].values[col]; if(v==null||v==='') return i; } return 0; }
+function curKey(){ return (rows[ptr]&&KEY)?rows[ptr].values[KEY]:''; }
+function renderGuide(){
+  const bar=$('guideBar');
+  if(!GUIDED||!rows.length||!numCol()){ bar.style.display='none'; renderRows(); return; }
+  const col=colByKey(numCol()); const cur=rows[ptr]?rows[ptr].values[numCol()]:'';
+  bar.style.display='flex';
+  bar.innerHTML='';
+  const b1=document.createElement('button'); b1.textContent='◀'; b1.onclick=()=>{ if(ptr>0){ptr--;renderGuide();} };
+  const t=document.createElement('span'); t.className='tgt';
+  t.textContent='🎯 '+curKey()+' / '+(col?col.label:numCol())+' = '+(cur===''||cur==null?'？':cur);
+  const b2=document.createElement('button'); b2.textContent='▶'; b2.onclick=()=>{ if(ptr<rows.length-1){ptr++;renderGuide();} };
+  bar.appendChild(b1); bar.appendChild(t); bar.appendChild(b2);
+  renderRows([rows[ptr]?rows[ptr].row:null]);  // 対象行をハイライト＆スクロール
+  setStatus('🎯 '+curKey()+' の '+(col?col.label:'')+' を言ってください');
+}
+function guideAdvance(){ // 記入後に次の行へ
+  if(ptr<rows.length-1) ptr++; renderGuide();
+}
 
 function updateMic(){ $('micBtn').disabled = !(FILE && TAB && KEY && audioSupported()); }
 
@@ -418,7 +452,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v10';
+const VERSION='v11';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
@@ -515,6 +549,7 @@ function applyResult(r){
   const hit=[]; (r.updates||[]).forEach(u=>{ const row=rows.find(x=>x.row===u.row); if(row){ Object.assign(row.values,u.written); hit.push(u.row); } });
   renderRows(hit); showWarnings(r.warnings||[]);
   setStatus((r.updates||[]).length?('記入✓ '+r.updates.length+'行'+(outboxCount()?(' / 未送信'+outboxCount()):'')):'該当行なし（warning確認）');
+  if(GUIDED && (r.updates||[]).length){ guideAdvance(); }   // ガイド: 記入できたら次の対象へ
 }
 async function flushOutbox(){
   if(!outbox.length || !navigator.onLine) return;
@@ -536,8 +571,11 @@ async function sttSend(blob){
   if(!blob.size){ setStatus('録音が空でした'); return; }
   setStatus('認識中…');
   let b64; try{ b64=await blobToB64(blob); }catch(e){ setStatus('変換失敗'); return; }
+  var mode='', activeCol='', targetKey='';
+  if(GUIDED&&numCol()){ mode='value'; activeCol=numCol(); targetKey=curKey(); }
+  else if(NUMMODE&&numCol()){ mode='numeric'; activeCol=numCol(); }
   const job={action:'stt', audio:b64, mime:recMime, fileId:FILE, tab:TAB, keyCol:KEY, cats:CATS, apply:$('handsfree').checked?'1':'0',
-    mode:(NUMMODE&&numCol())?'numeric':'', activeCol:(NUMMODE?numCol():'')};
+    mode:mode, activeCol:activeCol, targetKey:targetKey};
   try{
     const r=await postJSON(job);
     if(!r.ok){ setStatus('認識失敗:'+(r.error||'')); return; }   // サーバ応答エラーはキューしない(再送しても同じ)
@@ -600,6 +638,7 @@ $('tabSel').addEventListener('change',loadColumns);
 $('keySel').addEventListener('change',onKeyChange);
 $('numMode').addEventListener('change',onNumMode);
 $('numColSel').addEventListener('change',onNumCol);
+$('guideMode').addEventListener('change',onGuideMode);
 
 window.addEventListener('resize', ()=>{ clearTimeout(window._fitT); window._fitT=setTimeout(fitWidth,150); });
 window.addEventListener('orientationchange', ()=>setTimeout(fitWidth,300));
