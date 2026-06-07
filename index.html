@@ -112,7 +112,7 @@
 </div>
 
 <div class="bar">
-  <button id="micBtn" disabled>🎤 押して話す</button>
+  <button id="micBtn" disabled>🎤 ハンズフリー開始</button>
   <label class="toggle"><input type="checkbox" id="handsfree" checked> 自動記録</label>
   <button id="csvBtn">CSV</button>
 </div>
@@ -383,28 +383,69 @@ async function sendTranscript(text){
 }
 function showWarnings(ws){ $('warnings').textContent = ws.length?('⚠ '+ws.join(' / ')):''; }
 
-/* ---------- 音声: 録音→Whisper(GAS経由)。頭切れ無し・専門用語精度↑ ---------- */
-let mediaRec=null, chunks=[], audioStream=null, recording=false, recMime='audio/webm';
+/* ---------- 音声: ハンズフリーVAD（無音で自動区切り）→Whisper ----------
+   セッション開始/終了の1タップだけ。喋り→約1秒の無音で1区切りを自動送信。
+   区切りは"自然な間"なので単語の途中で切れない。 */
+let audioStream=null, recMime='audio/webm', sessionOn=false;
+let vadCtx=null, analyser=null, vadTimer=null;
+let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
+// しきい値（実機で調整可）
+const VAD_THRESH=0.018, SILENCE_MS=900, MIN_SPEECH_MS=350, MAX_SEG_MS=15000;
+
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
 function initSpeech(){ if(!audioSupported()) setStatus('録音非対応ブラウザ'); }
-async function ensureStream(){ if(!audioStream) audioStream=await navigator.mediaDevices.getUserMedia({audio:true}); return audioStream; }
+async function ensureStream(){ if(!audioStream) audioStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); return audioStream; }
+function pickMime(){ return MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus'
+  :(MediaRecorder.isTypeSupported('audio/mp4')?'audio/mp4':'audio/webm'); }
+function micUI(on){ const b=$('micBtn'); b.classList.toggle('listening',on);
+  b.textContent=on?'🟢 ハンズフリー入力中（押して終了）':'🎤 ハンズフリー開始'; }
 
 async function toggleMic(){
-  if(recording){ try{ mediaRec.stop(); }catch(_){} return; }       // 録音中タップ=停止→送信
+  if(sessionOn){ stopSession(); return; }
   if(!(FILE&&TAB&&KEY)){ setStatus('ファイル/シート/キー列を選択'); return; }
   if(!audioSupported()){ setStatus('録音非対応ブラウザ'); return; }
   try{ await ensureStream(); }catch(e){ setStatus('マイク不可:'+e.message); return; }
-  chunks=[]; showWarnings([]); $('finalTx').textContent=''; $('interimTx').textContent='';
-  recMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
-          : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : 'audio/webm');
-  try{ mediaRec=new MediaRecorder(audioStream,{mimeType:recMime}); }
-  catch(_){ mediaRec=new MediaRecorder(audioStream); recMime=mediaRec.mimeType||'audio/webm'; }
-  mediaRec.ondataavailable=ev=>{ if(ev.data&&ev.data.size) chunks.push(ev.data); };
-  mediaRec.onstart=()=>{ recording=true; $('micBtn').classList.add('listening'); $('micBtn').textContent='🔴 録音中（押して停止）'; setStatus('🔴 録音中…話し終えたら停止'); requestWake(); };
-  mediaRec.onstop=async ()=>{ recording=false; $('micBtn').classList.remove('listening'); $('micBtn').textContent='🎤 押して話す'; releaseWake();
-    const blob=new Blob(chunks,{type:recMime}); await sttSend(blob); };
-  mediaRec.start();
+  recMime=pickMime();
+  sessionOn=true; showWarnings([]); $('finalTx').textContent=''; micUI(true); requestWake();
+  setStatus('🟢 どうぞ（話して→少し黙ると自動記入）');
+  // VAD用の音量解析
+  try{
+    vadCtx=new (window.AudioContext||window.webkitAudioContext)();
+    if(vadCtx.state==='suspended') vadCtx.resume();
+    const src=vadCtx.createMediaStreamSource(audioStream);
+    analyser=vadCtx.createAnalyser(); analyser.fftSize=512; src.connect(analyser);
+  }catch(e){ setStatus('音声解析不可:'+e.message); sessionOn=false; micUI(false); return; }
+  startSeg();
+  vadTimer=setInterval(vadTick, 80);
 }
+function stopSession(){
+  sessionOn=false; if(vadTimer){ clearInterval(vadTimer); vadTimer=null; }
+  sendSeg=true; try{ if(segRec&&segRec.state!=='inactive') segRec.stop(); }catch(_){}
+  try{ if(vadCtx) vadCtx.close(); }catch(_){}
+  micUI(false); releaseWake(); setStatus('終了');
+}
+function startSeg(){
+  segChunks=[]; speaking=false; speechStart=0; silenceAt=0; sendSeg=false;
+  try{ segRec=new MediaRecorder(audioStream,{mimeType:recMime}); }
+  catch(_){ segRec=new MediaRecorder(audioStream); recMime=segRec.mimeType||'audio/webm'; }
+  segRec.ondataavailable=ev=>{ if(ev.data&&ev.data.size) segChunks.push(ev.data); };
+  segRec.onstop=()=>{
+    const dur=speechStart?(Date.now()-speechStart):0;
+    if(sendSeg && speaking && dur>MIN_SPEECH_MS){ sttSend(new Blob(segChunks,{type:recMime})); }
+    if(sessionOn) startSeg();   // 次の区切りへ
+  };
+  segRec.start(100);  // timesliceでチャンク取得
+}
+function vadTick(){
+  if(!analyser) return;
+  const buf=new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(buf);
+  let sum=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; }
+  const rms=Math.sqrt(sum/buf.length), now=Date.now();
+  if(rms>VAD_THRESH){ if(!speaking){ speaking=true; speechStart=now; setStatus('🔴 認識中…'); } silenceAt=0; }
+  else if(speaking){ if(!silenceAt) silenceAt=now; else if(now-silenceAt>SILENCE_MS){ cutSeg(); } }
+  if(speaking && speechStart && now-speechStart>MAX_SEG_MS) cutSeg();  // 長すぎ保護
+}
+function cutSeg(){ sendSeg=true; try{ if(segRec&&segRec.state!=='inactive') segRec.stop(); }catch(_){} }
 
 function blobToB64(blob){ return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(String(fr.result).split(',')[1]); fr.onerror=rej; fr.readAsDataURL(blob); }); }
 function postJSON(obj){
@@ -458,7 +499,7 @@ async function sttSend(blob){
 let wakeLock=null;
 async function requestWake(){ try{ if('wakeLock' in navigator) wakeLock=await navigator.wakeLock.request('screen'); }catch(_){} }
 async function releaseWake(){ try{ if(wakeLock){ await wakeLock.release(); wakeLock=null; } }catch(_){} }
-document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && recording) requestWake(); });
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && sessionOn) requestWake(); });
 
 /* 高コントラスト(黒地)トグル: OLEDで省電力・発熱低減。つけっぱOK */
 function applyHC(on){ document.body.classList.toggle('hc', on); $('hcBtn').classList.toggle('on', on); localStorage.setItem(LS.hc, on?'1':''); }
