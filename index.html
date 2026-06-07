@@ -125,6 +125,7 @@
   <select id="numColSel"><option value="">記入する列…</option></select>
   <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="guideMode"> 🎯 ガイド</label>
   <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="numMode"> 🔢 番号+値</label>
+  <label class="toggle" style="flex:0 0 auto;min-height:44px;"><input type="checkbox" id="manualNext"> 🔒「次」で前進</label>
   <span class="hint" style="flex-basis:100%;">🎯ガイド=対象を画面が指定→「値だけ」発話で自動前進。数値列なら「3 65」で3番へジャンプも可（番号モードを内包）。🔢=ポインタ無しで毎回「番号 値」。どちらも端末認識＝高速</span>
 </div>
 <div id="guideBar" style="display:none;"></div>
@@ -275,7 +276,7 @@ async function loadColumns(){
     // カテゴリ取得（辞書区分）
     try{ const rc=await jsonp({action:'columns',fileId:FILE,tab:TAB}); AVAILABLE_CATS=rc.categories||[]; }catch(_){}
     renderHead(); renderRows(); updateMic();
-    $('guideMode').checked=GUIDED; if(GUIDED){ ptr=firstUnfilledPtr(); renderGuide(); }
+    $('guideMode').checked=GUIDED; $('manualNext').checked=MANUAL_NEXT; if(GUIDED){ ptr=firstUnfilledPtr(); renderGuide(); }
     setStatus('準備OK '+rows.length+'行'+(KEY?(' / キー:'+KEY):' / キー列を選択'));
   }catch(e){ setStatus('列取得失敗:'+e.message); }
 }
@@ -297,8 +298,10 @@ function onNumMode(){ NUMMODE=$('numMode').checked; if(NUMMODE&&GUIDED){ GUIDED=
   setStatus(NUMMODE?('🔢 番号+値: '+(numCol()||'列未選択')):'番号+値 OFF'); }
 function onNumCol(){ localStorage.setItem(LS.numCol, numCol()); if(GUIDED) renderGuide(); if(NUMMODE) setStatus('🔢 記入先: '+numCol()); }
 
-/* ガイドモード: 対象セル(行ptr×記入列)をGUIが固定→値だけ発話→自動前進 */
+/* ガイドモード: 対象セル(行ptr×記入列)をGUIが固定→値だけ発話 */
 let GUIDED=localStorage.getItem('dy_guide')==='1', ptr=0;
+let MANUAL_NEXT=localStorage.getItem('dy_manualNext')==='1';   // ON=「次」と言うまで前進しない
+function onManualNext(){ MANUAL_NEXT=$('manualNext').checked; localStorage.setItem('dy_manualNext', MANUAL_NEXT?'1':''); if(GUIDED) renderGuide(); }
 function onGuideMode(){ GUIDED=$('guideMode').checked; localStorage.setItem('dy_guide', GUIDED?'1':'');
   if(GUIDED){ if(NUMMODE){NUMMODE=false;$('numMode').checked=false;} if(!numCol()){ const c=columns.find(x=>x.key!==KEY); if(c){$('numColSel').value=c.key; onNumCol();} } ptr=firstUnfilledPtr(); }
   renderGuide(); }
@@ -326,7 +329,8 @@ function renderGuide(){
     hint.textContent='「はい」か「いいえ」（または押す）:';
     ['はい','いいえ'].forEach(a=>{ const ch=document.createElement('button'); ch.className='chip'; ch.textContent=a; ch.onclick=()=>chipSet(a==='はい'?'TRUE':'FALSE'); bar.appendChild(ch); });
   } else if(col){
-    hint.textContent='数値を言ってください（例「65」）。🎤で録音→言うだけ→自動で次へ';
+    hint.textContent=MANUAL_NEXT ? '値を言う（例「65」）→「次」で前進。言い直すと上書き'
+                                 : '値を言うだけ（例「65」）→自動で次へ';
   }
   bar.appendChild(hint);
   renderRows([rows[ptr]?rows[ptr].row:null]);  // 対象行をハイライト＆スクロール
@@ -538,7 +542,8 @@ function matchCandClient(numStr){ const cs=candKeysClient(); if(cs.indexOf(numSt
 /* 書込み（楽観的: 即ローカル反映→裏でupdate） */
 function writeCur(col,v){ const r=rows[ptr]; if(!r) return; r.values[col]=v; renderRows([r.row]);
   jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:v}).catch(e=>setStatus('保存失敗:'+e.message));
-  setStatus('記入✓ '+curKey()+' '+col+'='+v); guideAdvance(); }
+  if(MANUAL_NEXT){ setStatus('記入✓ '+curKey()+' '+col+'='+v+'（「次」で前進）'); renderGuide(); }
+  else { setStatus('記入✓ '+curKey()+' '+col+'='+v); guideAdvance(); } }
 function clearCurrent(){ const r=rows[ptr], col=numCol(); if(!r||!col) return; r.values[col]=''; renderRows([r.row]);
   jsonp({action:'update',fileId:FILE,tab:TAB,row:r.row,key:col,value:''}).catch(e=>setStatus('保存失敗:'+e.message));
   setStatus('クリア '+curKey()); }
@@ -552,7 +557,7 @@ let audioStream=null, recMime='audio/webm', sessionOn=false;
 let vadCtx=null, analyser=null, vadTimer=null;
 let segRec=null, segChunks=[], speaking=false, speechStart=0, silenceAt=0, sendSeg=false;
 // しきい値（実機で調整可）。THRESHは低め、無音は長めで途中切れ防止
-const VERSION='v15';
+const VERSION='v16';
 let VAD_THRESH=0.010; const SILENCE_MS=1000, MIN_SPEECH_MS=350, MAX_SEG_MS=15000, MIN_BYTES=2000;
 
 function audioSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
@@ -651,7 +656,7 @@ function applyResult(r){
   const hit=[]; (r.updates||[]).forEach(u=>{ const row=rows.find(x=>x.row===u.row); if(row){ Object.assign(row.values,u.written); hit.push(u.row); } });
   renderRows(hit); showWarnings(r.warnings||[]);
   setStatus((r.updates||[]).length?('記入✓ '+r.updates.length+'行'+(outboxCount()?(' / 未送信'+outboxCount()):'')):'該当行なし（warning確認）');
-  if(GUIDED && (r.updates||[]).length){ guideAdvance(); }   // ガイド: 記入できたら次の対象へ
+  if(GUIDED && !MANUAL_NEXT && (r.updates||[]).length){ guideAdvance(); }   // ガイド: 記入できたら次へ（手動前進OFF時）
 }
 async function flushOutbox(){
   if(!outbox.length || !navigator.onLine) return;
@@ -741,6 +746,7 @@ $('keySel').addEventListener('change',onKeyChange);
 $('numMode').addEventListener('change',onNumMode);
 $('numColSel').addEventListener('change',onNumCol);
 $('guideMode').addEventListener('change',onGuideMode);
+$('manualNext').addEventListener('change',onManualNext);
 
 window.addEventListener('resize', ()=>{ clearTimeout(window._fitT); window._fitT=setTimeout(fitWidth,150); });
 window.addEventListener('orientationchange', ()=>setTimeout(fitWidth,300));
